@@ -164,7 +164,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 70; // bump on every push; shown at the bottom of the page
+const VERSION = 71; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -518,7 +518,7 @@ setInterval(() => {
 
 // ---------- Ink STT: one WebSocket per utterance ----------
 let keytermsOk = true; // [UNVERIFIED] query format for Ink keyterms; switched off automatically if Cartesia rejects it
-let claudeCalls = 0, crewTurns = 0, sirNow = false;
+let callMs = [], claudeCalls = 0, crewTurns = 0, sirNow = false;
 let uStat = { n: 0, peak: 0 }; // what the mic delivered during the current utterance, for a useful message when nothing was heard
 function startUtterance(initial) {
   uStat = { n: initial.length, peak: 0 };
@@ -804,6 +804,7 @@ function describeAction(run, res) {
   if (run.tool === "acknowledge_alert") return "acknowledged: " + (res.acknowledged || []).join(", ") + ".";
   return run.tool.replace(/_/g, " ") + " is done.";
 }
+const QUICK_TOOLS = ["set_cabin_lights", "set_camera", "set_reminder", "cancel_reminders"]; // actions whose result holds nothing the crew needs read back
 const LIGHT_KEYS = ["all_on", "all_off", "spots_on", "spots_off", "zones_on", "zones_off", "dim_percent"];
 const TIMED_TOOLS = ["set_cabin_lights", "set_camera", "console_command", "acknowledge_alert"]; // what Arya may do later on a timer; calls and mission control stay out
 function injectFault(id) { // fire a fault now, by button or by voice; a fixed fault can be fired again
@@ -1033,6 +1034,7 @@ The Console Telemetry tools are a live mission simulator on this page: HLVM3 lau
 Mission clock now: ${clock(sim.t)}${sim.running ? "" : sim.started ? " (on hold)" : " (mission not started yet)"}. Phase: ${phaseAt(sim.t)}.
 Active alerts right now: ${open || "none"}. When the crew says "it" or "that alert", they mean the latest of these.
 You do speak on your own: this console announces every new caution, warning and mission event aloud in your voice the moment it happens, without the crew asking. Never say that you can only speak when spoken to. If the crew asks you to tell them about alerts, say that you already call them out as they come.
+When you call set_cabin_lights, set_camera or set_reminder, write in the same message, together with the call, the one short sentence the crew will hear, in the crew's language, saying exactly what is done or set ("All cabin lights are off.", "30 second में सारी lights बंद हो जाएंगी।"). The console speaks that sentence if the action works, so do not write "I will check" or a question there.
 You can also remind and count down: when the crew asks "remind me when…", "tell me 10 seconds before…", "count down every 10 seconds", call set_reminder straight away. Never say you cannot set a reminder or count down. You can also act on a timer: for "after 30 seconds switch off all lights" or "at orbit insertion switch to the window camera", call set_reminder with action (lights, camera, a console command, or acknowledging an alert); never offer a reminder instead of doing it. A timer without action only speaks; it changes nothing, so never use one for something the crew wants done. Timers still pending: ${sim.reminders.length ? sim.reminders.slice(0, 6).map(r => (r.run ? r.run.tool : "speech") + " in " + fmtDur(r.at - sim.t)).join("; ") : "none"}; a timer that is not in this list has already fired or was never set.
 You recently said aloud, on your own: ${sim.said.map(t => '"' + t + '"').join(" ") || "nothing"}. If the crew answers one of these (for example "confirmed" or "yes, done"), acknowledge it in a few words.
 Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to you, even without your name." : "always listening — follow the When to speak rules strictly."}
@@ -1127,7 +1129,8 @@ function showUsage() { $("oUse").textContent = "Used from this browser on this p
 // OpenRouter: reasoning effort "none" switches a model's silent thinking off (per its reasoning-tokens guide); a model that
 // requires thinking rejects it, and then "low" is used. Other servers do not get the field.
 const mustThink = {};
-const thinkOff = (base, model) => /openrouter\.ai/.test(base) ? { reasoning: { effort: mustThink[model] ? "low" : "none" } } : {};
+// provider sort "latency": OpenRouter then tries the hosts of this model fastest first, instead of balancing by price (its provider-routing guide)
+const thinkOff = (base, model) => /openrouter\.ai/.test(base) ? { reasoning: { effort: mustThink[model] ? "low" : "none" }, provider: { sort: "latency" } } : {};
 async function openModel(messages, signal, model = $("oModel").value.trim()) {
   const base = $("oUrl").value.trim().replace(/\/+$/, ""), key = $("oKey").value.trim();
   for (let attempt = 0; ; attempt++) {
@@ -1166,20 +1169,25 @@ async function think(userText, signal) {
   if (turns.length > keep) history = history.slice(turns[turns.length - keep]); // ponytail: short rolling memory, cut only at turn starts
   const start = history.length;
   history.push({ role: "user", content: "[mission clock " + clock(sim.t) + "] " + userText }); // the stamp shows Claude that time has moved since older turns
-  claudeCalls = 0;
+  claudeCalls = 0; callMs = [];
   sirNow = ++crewTurns % 5 === 0; // "sir" is allowed in one reply out of five; a model left to itself says it every time
   try {
     for (let i = 0; i < 6; i++) {
-      const j = await claude(history, signal); claudeCalls++;
+      const t = performance.now(), j = await claude(history, signal); claudeCalls++; callMs.push(performance.now() - t);
       history.push({ role: "assistant", content: j.content });
-      const uses = j.content.filter(c => c.type === "tool_use");
-      if (!uses.length) return j.content.filter(c => c.type === "text").map(c => c.text).join("").trim() || "...";
+      const uses = j.content.filter(c => c.type === "tool_use"), said = j.content.filter(c => c.type === "text").map(c => c.text).join("").trim();
+      if (!uses.length) return said || "...";
       // Every tool call gets its result, whatever the stop reason: a call left without one makes the API refuse the whole conversation.
       status("Arya is checking the console…");
+      let quick = true;
       history.push({ role: "user", content: uses.map(u => {
         const res = runTool(u.name, u.input || {}); renderHud();
+        if (res.done !== true || !QUICK_TOOLS.includes(u.name)) quick = false;
         return { type: "tool_result", tool_use_id: u.id, content: JSON.stringify(res) };
       }) });
+      // A plain action that worked needs no second model call: the sentence the model wrote with the call is the reply.
+      // That second call was half of the 8 to 15 s wait on light commands. Anything that failed or returned data still goes back to the model.
+      if (quick && said) { history.push({ role: "assistant", content: [{ type: "text", text: said }] }); return said; }
     }
     throw new Error("Too many tool calls in one turn.");
   } catch (e) { // failed or cancelled turn leaves no half-finished tool call behind
@@ -1324,7 +1332,7 @@ async function finishTurn() {
     if (reply.replace(/[.\s…]/g, "")) { setState("speaking", "Tap the button to stop Arya."); first = await speak(reply, ac.signal); }
     if (turn !== ac) return;
     turn = null;
-    setState("idle", "Ink " + secs(t1 - t0) + " · " + brainName() + " " + secs(t2 - t1) + (claudeCalls > 1 ? " (" + claudeCalls + " calls)" : "") + (trMs ? ", of which Hindi " + secs(trMs) : "") + (first === null ? "" : " · Sonic " + secs(first)));
+    setState("idle", "Ink " + secs(t1 - t0) + " · " + brainName() + " " + secs(t2 - t1) + (claudeCalls > 1 ? " (" + callMs.map(secs).join(" + ") + ")" : "") + (trMs ? ", of which Hindi " + secs(trMs) : "") + (first === null ? "" : " · Sonic " + secs(first)));
   } catch (e) {
     if (turn !== ac) return; // cancelled by the crew: the new state is already set
     turn = null; stopAudio(); setState("idle"); status(e.message, true);
