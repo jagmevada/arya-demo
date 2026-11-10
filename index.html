@@ -72,7 +72,15 @@
     </div>
     <div class="row"><button id="test">Test connections</button><button id="clear">Clear conversation</button></div>
     <label>Cartesia API key<input id="cKey" type="password" autocomplete="off" placeholder="sk_car_..."></label>
+    <label>Brain
+      <select id="brain"><option value="claude">Claude (Anthropic API)</option><option value="open">Open model (OpenAI-compatible API)</option></select></label>
     <label>Anthropic API key<input id="aKey" type="password" autocomplete="off" placeholder="sk-ant-..."></label>
+    <div id="openCfg">
+      <label>Open model: API base URL<input id="oUrl" autocomplete="off" placeholder="https://openrouter.ai/api/v1"></label>
+      <label>Open model: API key (leave empty for a local server)<input id="oKey" type="password" autocomplete="off"></label>
+      <label>Open model: model name, exactly as the provider lists it<input id="oModel" autocomplete="off" placeholder="copy it from the provider's model list"></label>
+      <div class="hint">Pick a model that supports tool calling. For a local server use its address, for example http://localhost:11434/v1.</div>
+    </div>
     <label>Claude model
       <select id="model">
         <option value="claude-haiku-5-5">claude-haiku-5-5 (fastest)</option>
@@ -139,7 +147,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 37; // bump on every push; shown at the bottom of the page
+const VERSION = 38; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -153,7 +161,7 @@ const store = {
 const aryaDefault = $("aryaDefault").textContent.trim();
 const LEX_DEFAULT = "ISTRAC=Estrack\nISRO=Isro\nSHAR=Shaar\nSAC=Sack\nMOX=Mox\nNavIC=Navik\nHLVM3=H L V M 3\nLVM3=L V M 3\nkPa=kilopascal";
 const KEYTERMS = ["Arya", "ISTRAC", "ISRO", "Sriharikota", "HLVM3", "Bengaluru", "Port Blair", "splashdown", "deorbit", "scrubber", "visor", "acknowledge", "caution"]; // helps Ink hear these words
-const fields = { cKey:"", aKey:"", model:"claude-haiku-5-5", voice:DEFAULT_VOICE, sens:"0.015", silence:"900", prompt:aryaDefault, lex:LEX_DEFAULT };
+const fields = { brain:"claude", oUrl:"https://openrouter.ai/api/v1", oKey:"", oModel:"", cKey:"", aKey:"", model:"claude-haiku-5-5", voice:DEFAULT_VOICE, sens:"0.015", silence:"900", prompt:aryaDefault, lex:LEX_DEFAULT };
 for (const [k, d] of Object.entries(fields)) {
   $(k).value = store.get(k, d);
   $(k).addEventListener("input", () => {
@@ -162,7 +170,9 @@ for (const [k, d] of Object.entries(fields)) {
   });
 }
 $("resetPrompt").onclick = () => { $("prompt").value = aryaDefault; try { localStorage.removeItem("arya.prompt"); } catch {} };
-if (!$("cKey").value || !$("aKey").value) $("settings").open = true;
+const showBrain = () => { $("openCfg").hidden = $("brain").value !== "open"; };
+$("brain").addEventListener("change", showBrain); showBrain();
+if (!$("cKey").value || ($("brain").value === "open" ? !$("oModel").value : !$("aKey").value)) $("settings").open = true;
 $("ver").textContent = "Arya demo · version " + VERSION + " · all mission data simulated";
 
 let mode = store.get("mode", "ptt");
@@ -203,7 +213,7 @@ function log(who, text) {
 }
 $("clear").onclick = () => { $("log").innerHTML = ""; history = []; record.length = 0; };
 $("copyLog").onclick = async () => {
-  const text = ["Arya demo v" + VERSION + " | model " + $("model").value + " | mode " + mode + " | sim " + sim.speed + "x at " + clock(sim.t) + (sim.running ? "" : " HOLD"),
+  const text = ["Arya demo v" + VERSION + " | model " + brainModel() + (openBrain() ? " via " + $("oUrl").value.trim() : "") + " | mode " + mode + " | sim " + sim.speed + "x at " + clock(sim.t) + (sim.running ? "" : " HOLD"),
     "mic: " + micDiag(), navigator.userAgent, "--- oldest first ---", ...record].join("\n");
   let ok = false;
   try { await navigator.clipboard.writeText(text); ok = true; }
@@ -730,7 +740,12 @@ ${JSON.stringify({ ...snapshot(), camera: sim.camera, next_events: nextEvents(),
     next_ground_station: nextContacts(20).find(c => !/relay|recovery/.test(c.via)) || "none before splashdown; contact is by relay satellite, then the recovery ship",
     safety_now: Object.fromEntries(sim.alerts.filter(a => active(a.id)).map(a => [a.id, SOPS[a.id].safety()])) })}`;
 }
+// ---------- brain: Claude, or any open model behind an OpenAI-compatible API ----------
+const openBrain = () => $("brain").value === "open";
+const brainModel = () => openBrain() ? $("oModel").value.trim() : $("model").value;
+const brainName = () => openBrain() ? "LLM" : "Claude";
 async function claude(messages, signal) {
+  if (openBrain()) return openModel(messages, signal);
   for (let attempt = 0; ; attempt++) {
     const r = await fetchT("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -747,8 +762,48 @@ async function claude(messages, signal) {
     throw new Error("Claude: " + r.status + " " + (await r.text()).slice(0, 200));
   }
 }
+// The conversation is kept in Anthropic's shape; these two functions translate it to and from the OpenAI chat shape
+// used by OpenRouter, Groq, Together, and by local servers such as Ollama, llama.cpp and vLLM.
+function toOpenMessages(messages) {
+  const out = [{ role: "system", content: $("prompt").value + STATIC_CONTEXT + demoContext() }];
+  for (const m of messages) {
+    if (typeof m.content === "string") { out.push({ role: m.role, content: m.content }); continue; }
+    if (m.role === "assistant") {
+      const calls = m.content.filter(c => c.type === "tool_use").map(c => ({ id: c.id, type: "function", function: { name: c.name, arguments: JSON.stringify(c.input || {}) } }));
+      out.push({ role: "assistant", content: m.content.filter(c => c.type === "text").map(c => c.text).join("") || null, ...(calls.length ? { tool_calls: calls } : {}) });
+    } else for (const c of m.content) if (c.type === "tool_result") out.push({ role: "tool", tool_call_id: c.tool_use_id, content: c.content });
+  }
+  return out;
+}
+async function openModel(messages, signal) {
+  const base = $("oUrl").value.trim().replace(/\/+$/, ""), key = $("oKey").value.trim();
+  for (let attempt = 0; ; attempt++) {
+    let r;
+    try {
+      r = await fetchT(base + "/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(key ? { "Authorization": "Bearer " + key } : {}) }, // a local server needs no key
+        body: JSON.stringify({ model: $("oModel").value.trim(), max_tokens: 700, messages: toOpenMessages(messages),
+          tools: TOOLS.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.input_schema } })) }),
+      }, 60000, signal);
+    } catch (e) { if (signal?.aborted) throw e; throw new Error("LLM: could not reach " + base + " (" + e.message + "). Check the URL; a browser also needs the server to allow cross-origin requests."); }
+    if (r.ok) {
+      const msg = (await r.json()).choices?.[0]?.message || {}, content = [];
+      const text = String(msg.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim(); // drop a reasoning model's private thinking
+      if (text) content.push({ type: "text", text });
+      (msg.tool_calls || []).forEach((c, i) => {
+        let input = {}; try { input = JSON.parse(c.function?.arguments || "{}") || {}; } catch {} // a small model may write broken JSON: run the tool with no input, it will answer done false
+        content.push({ type: "tool_use", id: c.id || "call_" + Date.now() + "_" + i, name: c.function?.name || "", input });
+      });
+      return { content, stop_reason: msg.tool_calls?.length ? "tool_use" : "end_turn" };
+    }
+    if (attempt === 0 && [429, 500, 502, 503].includes(r.status)) { await sleep(800); continue; }
+    throw new Error("LLM: " + r.status + " " + (await r.text()).slice(0, 200));
+  }
+}
 async function think(userText, signal) {
-  if (!$("aKey").value.trim()) throw new Error("Enter your Anthropic API key in Settings.");
+  if (openBrain() ? !$("oUrl").value.trim() || !brainModel() : !$("aKey").value.trim())
+    throw new Error(openBrain() ? "Enter the open model's URL and model name in Settings." : "Enter your Anthropic API key in Settings.");
   const turns = history.flatMap((m, i) => m.role === "user" && typeof m.content === "string" ? [i] : []);
   if (turns.length > 6) history = history.slice(turns[turns.length - 6]); // ponytail: keep last 6 turns, cut only at turn starts
   const start = history.length;
@@ -888,7 +943,7 @@ async function finishTurn() {
     if (reply.replace(/[.\s…]/g, "")) { setState("speaking", "Tap the button to stop Arya."); first = await speak(reply, ac.signal); }
     if (turn !== ac) return;
     turn = null;
-    setState("idle", "Ink " + secs(t1 - t0) + " · Claude " + secs(t2 - t1) + (claudeCalls > 1 ? " (" + claudeCalls + " calls)" : "") + (first === null ? "" : " · Sonic " + secs(first)));
+    setState("idle", "Ink " + secs(t1 - t0) + " · " + brainName() + " " + secs(t2 - t1) + (claudeCalls > 1 ? " (" + claudeCalls + " calls)" : "") + (first === null ? "" : " · Sonic " + secs(first)));
   } catch (e) {
     if (turn !== ac) return; // cancelled by the crew: the new state is already set
     turn = null; stopAudio(); setState("idle"); status(e.message, true);
@@ -1013,7 +1068,7 @@ $("test").onclick = async () => {
       await u.end(); return "connected" + (keytermsOk ? ", keyterms on" : ", keyterms off");
     });
     let reply = "Arya online. ISTRAC and ISRO.";
-    await step("Claude (" + $("model").value + ")", async () => {
+    await step(brainName() + " (" + brainModel() + ")", async () => {
       const saved = history, t = performance.now(); history = [];
       try { reply = await think("Push-to-talk test. Reply with exactly: Arya online. ISTRAC and ISRO.", ac.signal); } finally { history = saved; }
       return reply + " (" + secs(performance.now() - t) + ")";
