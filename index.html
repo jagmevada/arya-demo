@@ -154,7 +154,7 @@ Friendly small talk with the crew is welcome (see Conversation style). Only for 
 - To change something (lights, cameras, calls), call the tool straight away; it reads the console itself.
 - Before you **call** someone, **hang up**, **end all calls** or **reject** a call, say who and wait for a "yes".
 - If a tool answers done false, say what did not change. Never say it worked.
-- Start, restart, hold, resume or jump the simulated mission only when the crew asks, with the simulator tool. Never change its speed.
+- Start, restart, hold, resume or jump the simulated mission, or change its speed, only when the crew asks, with the simulator tool.
 </script>
 
 <script>
@@ -164,7 +164,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 67; // bump on every push; shown at the bottom of the page
+const VERSION = 68; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -837,7 +837,8 @@ const TOOLS = [
   { name: "video_call", description: "Call a contact or hang up. Only call after the crew said yes.",
     input_schema: { type: "object", properties: { action: { type: "string", enum: ["call", "hang_up"] }, contact: { type: "string", enum: CONTACTS } }, required: ["action"] } },
   { name: "simulator", description: "Control the simulated mission on the crew's request: start or restart it, hold the clock, or resume it. quick=true starts at T minus 10 seconds with no mission brief (\"quick start\", \"skip the brief\", \"start from T minus 10\"); quick=false starts at T minus 50 seconds with the brief; leave it out to use the setting on the page. action=jump with event moves the clock to just before that major event (\"jump to re-entry\", \"go to orbit insertion\"); re-entry is the event \"entry interface\".",
-    input_schema: { type: "object", properties: { action: { type: "string", enum: ["start", "restart", "hold", "resume", "jump"] }, quick: { type: "boolean" }, event: { type: "string", enum: JUMPS } }, required: ["action"] } },
+    input_schema: { type: "object", properties: { action: { type: "string", enum: ["start", "restart", "hold", "resume", "jump", "set_speed"] }, quick: { type: "boolean" }, event: { type: "string", enum: JUMPS },
+      speed: { type: "number", enum: [1, 4, 12], description: "Simulator speed after liftoff: 1 = real time, 4 or 12 = faster. Give it with set_speed, or together with start, restart or jump when the crew names a speed (\"at 1x speed\")." } }, required: ["action"] } },
   { name: "set_reminder", description: "Make yourself speak a reminder later, without being asked again. Either give event + seconds_before (\"remind me 10 seconds before orbit insertion\"), or in_seconds from now (\"remind me in 2 minutes to check the valve\"). With event + repeat_every_seconds you count down aloud at that interval until the event. Seconds are mission-clock seconds. message is the exact words you will say then, in the crew's language; leave it out for a countdown. To DO something at that time by yourself (\"after 30 seconds switch off all lights\", \"switch to the window camera at orbit insertion\"), also give action = the tool to run and its input; then message is REQUIRED: the full sentence you will say once it is done, naming exactly what was done, in the crew's language (\"सारी lights बंद कर दी हैं।\", \"Window camera is on.\"), because the crew may have forgotten what they asked for.",
     input_schema: { type: "object", properties: { event: { type: "string", enum: MILESTONES.map(m => m[1]).filter(n => !/callout|status|final count|mission brief/.test(n)) },
       seconds_before: { type: "number" }, in_seconds: { type: "number" }, repeat_every_seconds: { type: "number" }, message: { type: "string" },
@@ -905,13 +906,17 @@ function runTool(name, a) {
       sim.reminders.push(...list);
       return { done: true, reminders_set: list.length, first_in: fmtDur(list[0].at - sim.t), note: run ? "The action will run by itself at that time and you will then say the message; confirm in a few words." : "You will speak them by yourself; confirm in a few words." };
     }
-    case "simulator":
+    case "simulator": {
+      const setSpeed = () => { const v = Number(a.speed); if (![1, 4, 12].includes(v)) return null; $("simSpeed").value = String(v); sim.speed = v; return v; };
+      if (a.action === "set_speed") { const v = setSpeed(); return v ? { done: true, speed: v + " times real time after liftoff" } : { done: false, reason: "speed must be 1, 4 or 12" }; }
+      if (a.speed != null) { const r = runTool("simulator", { ...a, speed: undefined }); const v = setSpeed(); return v ? { ...r, speed: v + " times real time" } : r; } // do the action, then apply the speed the crew named
       if (a.action === "jump") return jumpTo(a.event);
       if (a.action === "start" && sim.started) return { done: false, reason: "mission is already running at " + clock(sim.t) + "; use restart to begin again" };
       if (a.action === "start" || a.action === "restart") { simRestart(true, a.quick); log("Sim", "Mission started by voice at " + clock(sim.t) + ". After liftoff: " + sim.speed + "× speed, about " + Math.round(T_SPLASH / sim.speed / 60) + " minutes to splashdown."); return { done: true, mission_clock: "T minus " + fmtDur(-sim.t), note: sim.t < -20 ? "You will now read the mission brief aloud by yourself; reply with two or three words only." : "The count starts in a few seconds; reply with two or three words only." }; }
       if (a.action === "hold") { if (!sim.running) return { done: false, reason: "mission is already on hold" }; sim.running = false; return { done: true, held_at: clock(sim.t) }; }
       if (sim.running) return { done: false, reason: "mission is already running" };
       sim.running = sim.started = true; sim.last = Date.now(); return { done: true, resumed_at: clock(sim.t) };
+    }
     case "set_camera": if (!CAMERAS.includes(a.view)) return { done: false, reason: "unknown view" }; sim.camera = a.view; return { done: true, view: a.view };
     case "video_call":
       if (a.action === "hang_up") { const was = sim.call; sim.call = null; return was ? { done: true, ended: was } : { done: false, reason: "no active call" }; }
@@ -983,7 +988,7 @@ You are a professional member of the flight team, not a menu system and not a ch
 You are the crew's technical assistant as well as the console's voice. When the crew asks how or why something on the vehicle or in the mission works (for example "how does the scrubber work?", "why do we close visors?", "what does the C25 stage do?"), explain it from your own spaceflight and engineering knowledge in two or three short spoken sentences; this overrides any rule that limits you to console values. Give the general principle, and do not invent specific design figures for this vehicle: if they ask for a number the console does not have, say it is not on the console. Offer more detail only if asked.
 
 ## Mission control in this demo
-You can start, restart, hold and resume the simulated mission, and jump its clock to just before a major event (liftoff, S200 separation, orbit insertion, deorbit burn, re-entry, parachutes, splashdown), with the simulator tool. Do it straight away when the crew asks ("start the mission", "hold", "resume", "restart the mission"); this overrides any rule that says you cannot touch the mission. Ask for a "yes" only before a restart while a mission is running.
+You can start, restart, hold and resume the simulated mission, jump its clock to just before a major event (liftoff, S200 separation, orbit insertion, deorbit burn, re-entry, parachutes, splashdown), and set its speed to 1, 4 or 12 times real time, with the simulator tool. Do it straight away when the crew asks ("start the mission", "hold", "resume", "restart the mission"); this overrides any rule that says you cannot touch the mission. Ask for a "yes" only before a restart while a mission is running.
 You can also trigger a simulated fault with inject_fault when asked ("simulate a pressure leak", "test the CO2 alert"): FAN2_LOW, CO2_HIGH, CABIN_PRESS_LOW, COMM1_LOSS.
 
 ## Situational awareness (your main job)
@@ -994,6 +999,8 @@ The crew is busy with their hands and eyes. Keep them aware with the fewest word
 - Never repeat what the crew just said, and add no advice they did not ask for.
 
 ## Procedures
+- With more than one alert, "it", "this" and "the immediate action" mean the alert that came on most recently and is still active. Never give steps for, or act on, an alert that is already resolved.
+- When the crew only acknowledges or comments on an alert you just announced ("we need to check this"), do not repeat the announcement; give its value and limit, and offer the first step.
 - When the crew asks what to do about a caution or warning, call get_sop. Say only the next step, in one or two sentences, then wait until the crew says it is done before you give the following step. The first time, say once that it is a demo procedure.
 - When the crew asks how safe it is, or how much time they have, answer from safety_now in get_sop: the value, its limit and the trend.
 - Use console_command only when the crew asks for that action or says yes to it. If it answers done false, say why nothing changed.
