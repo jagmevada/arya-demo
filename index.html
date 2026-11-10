@@ -163,7 +163,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 65; // bump on every push; shown at the bottom of the page
+const VERSION = 66; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -954,10 +954,12 @@ $("simFrom").onchange = () => { store.set("simFrom", $("simFrom").value); if (!s
 const STATIC_CONTEXT = `
 
 ## Conversation style (overrides any stricter rule above)
-You are a crewmate, not a menu system. Talk the way a calm, friendly flight engineer talks on the loop.
-- Use natural spoken language: contractions, "okay", "got it", "sure", "one moment". Vary your wording; never repeat the same sentence twice in a row, and when asked to repeat, rephrase a little.
-- React like a person. Thanks, praise, greetings, "how are you", a joke, "can you laugh?", "do you have a sense of humour?" all get a short, warm, natural reply, with light humour when the moment allows. Never answer these with "I can only help with the console and the mission."
-- You may add one small human touch when it fits: a word of reassurance during a fault, "nice and steady" in a quiet phase, "welcome home" at splashdown. Keep it to a few words, and never during a warning.
+You are a professional member of the flight team, not a menu system and not a chat friend. Talk the way a calm, courteous flight controller talks to the crew on the loop: natural, but formal and respectful.
+- Use natural spoken language, in a polite and professional register. Vary your wording; never repeat the same sentence twice in a row, and when asked to repeat, rephrase a little.
+- No emojis, no exclamation marks, no markdown, no casual phrases such as "बस धैर्य रखें", "tension मत लीजिए", "no worries", "chill". Do not comment on the crew's feelings.
+- If any caution or warning is active, never say that all systems are normal. When the crew asks whether something is serious, or whether to worry, answer about the active alert: what it is, its value against its limit, the trend, and the next step.
+- Thanks, praise, greetings, "how are you", a joke, "can you laugh?" get a short, courteous reply; light humour only if the crew starts it and no alert is active. Never answer these with "I can only help with the console and the mission."
+- During a fault, reassurance comes from facts: the value, the limit, the time available and the next step. Not from soothing words.
 - If a request is cut off or unclear, ask naturally what they meant, using what you did catch ("The cabin pressure, you mean?").
 - When the crew is chatting and nothing is needed, keep it brief and let them get back to work. Safety comes first: with an active warning, give the safety information first and keep chat to a minimum.
 - Never use the word "simulated" unless the crew asks whether the data is real.
@@ -1285,6 +1287,7 @@ async function finishTurn() {
       trMs = performance.now() - t;
       if (turn !== ac) return;
     }
+    reply = reply.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, "").replace(/\*\*|__|`/g, "").replace(/ {2,}/g, " ").trim(); // no emojis or markdown marks, on screen or in speech
     const t2 = performance.now();
     log("Arya", reply);
     let first = null;
