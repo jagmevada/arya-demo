@@ -90,6 +90,9 @@
       <label>Open model: model name, exactly as the provider lists it<input id="oModel" autocomplete="off" placeholder="copy it from the provider's model list"></label>
       <div class="row"><button id="oLoad">Load model list</button><label style="margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap"><input id="oFree" type="checkbox" style="width:auto;margin:0">Free only</label><button id="oBench" hidden>Test listed models</button></div>
       <select id="oPick" hidden></select>
+      <label>Price to estimate cost, in $ per million tokens (optional; copy it from the provider's price list)<input id="oPrice" type="number" min="0" step="0.05" placeholder="for example 0.5"></label>
+      <div class="hint" id="oUse"></div>
+      <div class="row"><button id="oUseReset">Reset usage count</button></div>
       <div class="hint" id="oHint">Tap "Load model list" to choose from the provider's models that support tool calling. For a local server use its address, for example http://localhost:11434/v1.</div>
     </div>
     <label>Claude model
@@ -158,7 +161,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 45; // bump on every push; shown at the bottom of the page
+const VERSION = 46; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -172,7 +175,7 @@ const store = {
 const aryaDefault = $("aryaDefault").textContent.trim();
 const LEX_DEFAULT = "ISTRAC=Estrack\nISRO=Isro\nSHAR=Shaar\nSAC=Sack\nMOX=Mox\nNavIC=Navik\nHLVM3=H L V M 3\nLVM3=L V M 3\nkPa=kilopascal";
 const KEYTERMS = ["Arya", "ISTRAC", "ISRO", "Sriharikota", "HLVM3", "Bengaluru", "Port Blair", "splashdown", "deorbit", "scrubber", "visor", "acknowledge", "caution"]; // helps Ink hear these words
-const fields = { brain:"claude", oUrl:"https://openrouter.ai/api/v1", oKey:"", oModel:"", cKey:"", aKey:"", model:"claude-haiku-5-5", voice:DEFAULT_VOICE, sens:"0.015", silence:"900", prompt:aryaDefault, lex:LEX_DEFAULT };
+const fields = { oPrice:"", brain:"claude", oUrl:"https://openrouter.ai/api/v1", oKey:"", oModel:"", cKey:"", aKey:"", model:"claude-haiku-5-5", voice:DEFAULT_VOICE, sens:"0.015", silence:"900", prompt:aryaDefault, lex:LEX_DEFAULT };
 for (const [k, d] of Object.entries(fields)) {
   $(k).value = store.get(k, d);
   $(k).addEventListener("input", () => {
@@ -276,6 +279,10 @@ $("oModel").addEventListener("input", saveModelForProv);
 if ($("oKey").value && !store.get("oKey:" + $("oUrl").value.trim(), "")) store.set("oKey:" + $("oUrl").value.trim(), $("oKey").value.trim()); // keep the key entered before this menu existed
 if ($("oModel").value && !store.get("oModel:" + $("oUrl").value.trim(), "")) saveModelForProv(); // same for the model chosen before
 syncProv();
+$("oPrice").addEventListener("input", showUsage);
+$("oProv").addEventListener("change", showUsage);
+$("oUseReset").onclick = () => { store.set("use:" + $("oUrl").value.trim().replace(/\/+$/, ""), ""); showUsage(); };
+showUsage();
 const showBrain = () => { $("openCfg").hidden = $("brain").value !== "open"; };
 $("brain").addEventListener("change", showBrain); showBrain();
 if (!$("cKey").value || ($("brain").value === "open" ? !$("oModel").value : !$("aKey").value)) $("settings").open = true;
@@ -319,7 +326,7 @@ function log(who, text) {
 }
 $("clear").onclick = () => { $("log").innerHTML = ""; history = []; record.length = 0; };
 $("copyLog").onclick = async () => {
-  const text = ["Arya demo v" + VERSION + " | model " + brainModel() + (openBrain() ? " via " + $("oUrl").value.trim() : "") + " | mode " + mode + " | sim " + sim.speed + "x at " + clock(sim.t) + (sim.running ? "" : " HOLD"),
+  const text = ["Arya demo v" + VERSION + " | model " + brainModel() + (openBrain() ? " via " + $("oUrl").value.trim() + " | usage " + usageText() : "") + " | mode " + mode + " | sim " + sim.speed + "x at " + clock(sim.t) + (sim.running ? "" : " HOLD"),
     "mic: " + micDiag(), navigator.userAgent, "--- oldest first ---", ...record].join("\n");
   let ok = false;
   try { await navigator.clipboard.writeText(text); ok = true; }
@@ -883,6 +890,17 @@ function toOpenMessages(messages) {
   }
   return out;
 }
+// Running count of what this browser has sent to each provider, so a trial credit does not run out unnoticed
+function usageOf(base) { try { return JSON.parse(store.get("use:" + base, "")) || { calls: 0, inTok: 0, outTok: 0 }; } catch { return { calls: 0, inTok: 0, outTok: 0 }; } } // a function, not a const: it is used during page set-up, before this line runs
+function addUsage(base, u) {
+  const t = usageOf(base); t.calls++; t.inTok += u?.prompt_tokens || 0; t.outTok += u?.completion_tokens || 0;
+  store.set("use:" + base, JSON.stringify(t)); showUsage();
+}
+function usageText(base = $("oUrl").value.trim().replace(/\/+$/, "")) {
+  const t = usageOf(base), price = +$("oPrice").value || 0, cost = (t.inTok + t.outTok) / 1e6 * price;
+  return t.calls + " calls, " + (t.inTok / 1000).toFixed(0) + "k tokens in, " + (t.outTok / 1000).toFixed(1) + "k out" + (price ? ", about $" + cost.toFixed(2) + " at $" + price + " per million tokens" : "");
+}
+function showUsage() { $("oUse").textContent = "Used from this browser on this provider: " + usageText() + ". The provider's own console shows the true balance."; }
 async function openModel(messages, signal, model = $("oModel").value.trim()) {
   const base = $("oUrl").value.trim().replace(/\/+$/, ""), key = $("oKey").value.trim();
   for (let attempt = 0; ; attempt++) {
@@ -897,7 +915,8 @@ async function openModel(messages, signal, model = $("oModel").value.trim()) {
       }, 60000, signal);
     } catch (e) { if (signal?.aborted) throw e; throw new Error("LLM: could not reach " + base + " (" + e.message + "). Check the URL; a browser also needs the server to allow cross-origin requests."); }
     if (r.ok) {
-      const msg = (await r.json()).choices?.[0]?.message || {}, content = [];
+      const j = await r.json(), msg = j.choices?.[0]?.message || {}, content = [];
+      addUsage(base, j.usage);
       const text = String(msg.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim(); // drop a reasoning model's private thinking
       if (text) content.push({ type: "text", text });
       (msg.tool_calls || []).forEach((c, i) => {
@@ -907,7 +926,8 @@ async function openModel(messages, signal, model = $("oModel").value.trim()) {
       return { content, stop_reason: msg.tool_calls?.length ? "tool_use" : "end_turn" };
     }
     if (attempt === 0 && [429, 500, 502, 503].includes(r.status)) { await sleep(800); continue; }
-    throw new Error("LLM: " + r.status + " " + (await r.text()).slice(0, 200));
+    const body = (await r.text()).slice(0, 200);
+    throw new Error((r.status === 402 || /credit|quota|billing|payment/i.test(body) ? "LLM: the provider says the credit or quota is used up. " : "") + "LLM: " + r.status + " " + body);
   }
 }
 async function think(userText, signal) {
