@@ -161,7 +161,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 46; // bump on every push; shown at the bottom of the page
+const VERSION = 47; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -966,7 +966,7 @@ function spoken(text) { // apply the pronunciation list; the log keeps the writt
   // Open models often ignore "no markdown, no symbols": clean the text so the voice does not read them out
   text = text.replace(/[*_#`]+/g, "").replace(/[‑–—]/g, "-").replace(/\s?°\s?C\b/g, " degrees").replace(/\s?%/g, " percent")
     .replace(/\bkm\/s\b/g, "kilometres per second").replace(/\bm\/s\b/g, "metres per second").replace(/(\d)\s?km\b/g, "$1 kilometres")
-    .replace(/\bCO[₂2](?![A-Za-z0-9])/g, "C O 2").replace(/\bO[₂2](?![A-Za-z0-9])/g, "oxygen").replace(/T\s?-\s?minus/gi, "T minus");
+    .replace(/\bCO[₂2](?![A-Za-z0-9])/g, /[\u0900-\u097F]/.test(text) ? "सी ओ टू" : "C O two") // spelled out so a Hindi voice does not read the 2 as "do".replace(/\bO[₂2](?![A-Za-z0-9])/g, "oxygen").replace(/T\s?-\s?minus/gi, "T minus");
   for (const line of $("lex").value.split("\n")) {
     const [w, say] = line.split("=").map(x => x.trim());
     if (w && say) try { text = text.replace(new RegExp("\\b" + w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "g"), say); } catch {}
