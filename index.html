@@ -29,7 +29,8 @@
   .hudbar { display:flex; justify-content:space-between; align-items:center; color:var(--dim); font-size:13px; }
   #hud { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:6px; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:10px; font-variant-numeric:tabular-nums; }
   #hud div { display:flex; flex-direction:column; } #hud span { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; }
-  #hud b { font-weight:600; font-size:14px; } #hud b.ok { color:var(--ok); } #hud b.warn { color:var(--acc); }
+  #hud b { font-weight:600; font-size:14px; } #hud b.ok { color:var(--ok); } #hud b.warn { color:var(--acc); } #hud b.bad { color:var(--err); }
+  .hudbar select { width:auto; margin:0; padding:6px; }
   #log { flex:1; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; overflow-y:auto; min-height:200px; }
   .msg { margin:0 0 10px; } .msg .who { font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; }
   .msg.arya .who { color:var(--acc); } .msg .t { white-space:pre-wrap; }
@@ -55,7 +56,9 @@
   <div id="status">Open Settings, enter both API keys, then tap the button.</div>
   <div class="meter" title="Mic level / voice threshold"><i id="lvl"></i><b id="thr"></b></div>
 
-  <div class="hudbar"><span>Live console (simulated)</span><button id="simRestart">Restart sim</button></div>
+  <div class="hudbar"><span>Mission console (simulated)</span><div>
+    <select id="simSpeed" title="Simulator speed"><option value="1">1× real time</option><option value="4" selected>4× (30 min mission)</option><option value="12">12× (10 min)</option></select>
+    <button id="simPause" hidden>❚❚ Hold</button> <button id="simStart">▶ Start mission</button></div></div>
   <div id="hud"></div>
   <div id="log"></div>
 
@@ -71,6 +74,8 @@
       </select></label>
     <label>Sonic voice ID (Indian-accent English)<input id="voice" autocomplete="off"></label>
     <div class="hint">Default: Aarti (Indian-accent female). Pick any voice ID from play.cartesia.ai and paste it here.</div>
+    <label>Pronunciation list (WRITTEN=spoken, one per line)<textarea id="lex" style="min-height:120px"></textarea></label>
+    <div class="hint">Arya says the right-hand side whenever the left-hand word appears. Change the spelling until it sounds right.</div>
     <label>Voice threshold (always-listening mode)<input id="sens" type="range" min="0.002" max="0.08" step="0.001"></label>
     <label>Silence before end of turn (ms)<input id="silence" type="number" min="300" max="3000" step="100"></label>
     <label>Arya system prompt<textarea id="prompt"></textarea></label>
@@ -135,7 +140,9 @@ const store = {
   set(k, v) { try { localStorage.setItem("arya." + k, v); } catch {} },
 };
 const aryaDefault = $("aryaDefault").textContent.trim();
-const fields = { cKey:"", aKey:"", model:"claude-haiku-5-5", voice:DEFAULT_VOICE, sens:"0.015", silence:"900", prompt:aryaDefault };
+const LEX_DEFAULT = "ISTRAC=Estrack\nISRO=Isro\nSHAR=Shaar\nSAC=Sack\nMOX=Mox\nNavIC=Navik\nHLVM3=H L V M 3\nLVM3=L V M 3\nkPa=kilopascal";
+const KEYTERMS = ["Arya", "ISTRAC", "ISRO", "Sriharikota", "HLVM3", "Bengaluru", "Port Blair", "splashdown", "deorbit", "scrubber", "visor", "acknowledge", "caution"]; // helps Ink hear these words
+const fields = { cKey:"", aKey:"", model:"claude-haiku-5-5", voice:DEFAULT_VOICE, sens:"0.015", silence:"900", prompt:aryaDefault, lex:LEX_DEFAULT };
 for (const [k, d] of Object.entries(fields)) {
   $(k).value = store.get(k, d);
   $(k).addEventListener("input", () => {
@@ -143,7 +150,7 @@ for (const [k, d] of Object.entries(fields)) {
     if (k === "cKey" || k === "aKey") status(($("cKey").value.trim() ? "Cartesia key ✓  " : "Cartesia key missing  ") + ($("aKey").value.trim() ? "Anthropic key ✓" : "Anthropic key missing"));
   });
 }
-$("resetPrompt").onclick = () => { $("prompt").value = aryaDefault; store.set("prompt", aryaDefault); };
+$("resetPrompt").onclick = () => { $("prompt").value = aryaDefault; try { localStorage.removeItem("arya.prompt"); } catch {} };
 if (!$("cKey").value || !$("aKey").value) $("settings").open = true;
 
 let mode = store.get("mode", "ptt");
@@ -219,24 +226,32 @@ setInterval(() => {
 }, 20000);
 
 // ---------- Ink STT: one WebSocket per utterance ----------
+let keytermsOk = true; // [UNVERIFIED] query format for Ink keyterms; switched off automatically if Cartesia rejects it
 function startUtterance(initial) {
   const queue = [...initial];
   let ws = null, text = "", closing = false, resolveDone, rejectDone;
   const done = new Promise((res, rej) => { resolveDone = res; rejectDone = rej; });
-  getToken().then(tok => {
+  const connect = (tok, terms) => {
     const q = new URLSearchParams({ model: STT_MODEL, encoding: "pcm_s16le", sample_rate: STT_RATE, cartesia_version: CARTESIA_VERSION, access_token: tok });
-    ws = new WebSocket("wss://api.cartesia.ai/stt/websocket?" + q);
-    ws.binaryType = "arraybuffer";
-    ws.onopen = () => { queue.forEach(b => ws.send(b)); queue.length = 0; if (closing) ws.send("close"); };
-    ws.onmessage = e => {
+    if (terms) KEYTERMS.forEach(k => q.append("keyterm", k));
+    const sock = ws = new WebSocket("wss://api.cartesia.ai/stt/websocket?" + q);
+    let opened = false;
+    sock.binaryType = "arraybuffer";
+    sock.onopen = () => { opened = true; queue.forEach(b => sock.send(b)); queue.length = 0; if (closing) sock.send("close"); };
+    sock.onmessage = e => {
       const m = JSON.parse(e.data);
       if (m.type === "transcript" && m.is_final) text += m.text;
-      else if (m.type === "done") { resolveDone(text); ws.close(); }
-      else if (m.type === "error") rejectDone(new Error("Ink: " + (m.message || m.title)));
+      else if (m.type === "done") { resolveDone(text); sock.close(); }
+      else if (m.type === "error") { if (terms) keytermsOk = false; rejectDone(new Error("Ink: " + (m.message || m.title) + (terms ? " Please say that again." : ""))); }
     };
-    ws.onerror = () => rejectDone(new Error("Ink STT connection failed."));
-    ws.onclose = () => resolveDone(text);
-  }).catch(rejectDone);
+    sock.onerror = () => {
+      if (sock !== ws) return;
+      if (terms && !opened) { keytermsOk = false; connect(tok, false); } // retry once without keyterms; queued audio is kept
+      else rejectDone(new Error("Ink STT connection failed."));
+    };
+    sock.onclose = () => { if (sock === ws) resolveDone(text); };
+  };
+  getToken().then(tok => connect(tok, keytermsOk)).catch(rejectDone);
   return {
     send(b) { if (ws && ws.readyState === 1) ws.send(b); else queue.push(b); },
     end() {
@@ -248,100 +263,189 @@ function startUtterance(initial) {
   };
 }
 
-// ---------- live console simulator (stands in for the HUD connector) ----------
-// ponytail: simple circular-orbit + random-walk model; every value is simulated
-// LON0/PH0 tuned so ISTRAC Bengaluru AOS is ~5 min after restart
-const LON0 = 320, PH0 = 3840; const D2R = Math.PI / 180, R_E = 6371, ALT0 = 400, INC = 51.6, PERIOD = 92.6 * 60, EARTH_DAY = 86164;
+// ---------- mission simulator (stands in for the HUD connector) ----------
+// ponytail: illustrative profile, not flight data. Every time, altitude, speed and procedure here is a demo value;
+// replace PROFILE / MILESTONES / ANOM / SOPS with real figures when available.
+const D2R = Math.PI / 180, R_E = 6371, INC = 51.6, PERIOD = 5556, EARTH_DAY = 86164;
+const T_START = -600, T_INSERT = 960, T_DEORBIT = 3900, T_BURN_END = 4080, T_SMSEP = 4500, T_ENTRY = 5640, T_DROGUE = 6240, T_MAIN = 6330, T_SPLASH = 6540, T_END = T_SPLASH + 300;
+const SHAR = [13.72, 80.23];
 const STATIONS = [
-  ["ISTRAC Bengaluru", 13.03, 77.51], ["Sriharikota", 13.72, 80.23], ["Port Blair", 11.62, 92.73],
+  ["Sriharikota", 13.72, 80.23], ["ISTRAC Bengaluru", 13.03, 77.51], ["Port Blair", 11.62, 92.73],
   ["Lucknow", 26.85, 80.95], ["Mauritius", -20.3, 57.5],
 ];
+const RELAY = [[1500, 2300], [2900, 3800], [4300, 5400]]; // simulated relay-satellite windows between ground passes
 const CONTACTS = ["Flight Director ISTRAC", "Mission Control Sriharikota", "HOD"];
 const CAMERAS = ["cabin wide", "crew close-up", "window", "docking port"];
-const SCRIPT = [ // [seconds after restart, id, text, effect]
-  [120, "CO2_HIGH", "Caution: cabin carbon dioxide high", "co2"],
-  [420, "FAN2_LOW", "Caution: cabin fan 2 speed low", null],
+// [mission s, altitude km, speed km/s, g]
+const PROFILE = [[T_START, 0, 0, 1], [0, 0, 0, 1], [60, 12, 0.5, 1.8], [135, 45, 1.6, 2.6], [136, 46, 1.6, 1.2], [320, 170, 4.4, 2.2], [321, 171, 4.4, 0.8],
+  [T_INSERT, 400, 7.67, 3.0], [T_INSERT + 1, 400, 7.67, 0], [T_DEORBIT, 400, 7.67, 0], [T_DEORBIT + 1, 400, 7.67, 0.3], [T_BURN_END, 398, 7.55, 0.3], [T_BURN_END + 1, 398, 7.55, 0],
+  [T_ENTRY, 120, 7.8, 0.1], [5900, 55, 5.5, 3.8], [6100, 25, 1.2, 2.0], [T_DROGUE, 7, 0.15, 1.3], [T_MAIN, 3, 0.06, 1.1], [T_SPLASH - 1, 0.01, 0.007, 1], [T_SPLASH, 0, 0, 1]];
+// [mission s, event name, what Arya says aloud]
+const MILESTONES = [
+  [T_START, "countdown start", "Arya online. Countdown is at T minus 10 minutes. All console systems are nominal."],
+  [-300, "T minus 5 minutes", "T minus 5 minutes. Crew, please confirm suits sealed and visors closed."],
+  [-60, "T minus 1 minute", "T minus 1 minute. Vehicle is on internal power."],
+  [0, "liftoff", "Liftoff. HLVM3 has cleared the tower."],
+  [135, "S200 separation", "S200 boosters separated."],
+  [200, "crew escape system jettison", "Crew escape system jettisoned."],
+  [320, "L110 separation", "L110 core stage separated. C25 cryogenic stage ignited."],
+  [T_INSERT, "orbit insertion", "C25 cutoff. Orbit insertion confirmed at 400 kilometres."],
+  [1200, "visors open", "Crew, you may open your visors. Please confirm when done."],
+  [T_DEORBIT - 300, "deorbit preparation", "Deorbit burn in 5 minutes. Crew, please confirm seats locked and visors closed."],
+  [T_DEORBIT, "deorbit burn", "Deorbit burn started."],
+  [T_BURN_END, "deorbit burn complete", "Deorbit burn complete. We are coming home."],
+  [T_SMSEP, "service module separation", "Service module separated."],
+  [T_ENTRY, "entry interface", "Entry interface. Expect communication blackout and rising g load."],
+  [T_DROGUE, "drogue parachutes", "Drogue parachutes deployed."],
+  [T_MAIN, "main parachutes", "Main parachutes deployed."],
+  [T_SPLASH, "splashdown", "Splashdown confirmed. Welcome home. Recovery ships are on the way."],
 ];
+const ANOM = { // faults injected during the mission
+  FAN2_LOW: { t: 420, level: "caution", text: "Cabin fan 2 speed low", fix: "restart_cabin_fan_2" },
+  CO2_HIGH: { t: 1700, level: "caution", text: "Cabin carbon dioxide high", fix: "switch_co2_scrubber_b" },
+  CABIN_PRESS_LOW: { t: 2600, level: "warning", text: "Cabin pressure dropping", fix: "close_cabin_vent_valve" },
+  COMM1_LOSS: { t: 3300, level: "caution", text: "Communication link 1 lost", fix: "select_comm_link_2" },
+};
+const toLimit = (v, limit, rate) => rate * Math.sign(limit - v) > 1e-3 ? "about " + Math.max(1, Math.round((limit - v) / rate)) + " minutes to the limit at the current trend" : "stable, not moving toward the limit";
+const SOPS = { // demo procedures
+  FAN2_LOW: { steps: ["Confirm cabin fan 1 is running and cabin temperature is below 27 degrees.", "During ascent take no action; fan 1 alone gives enough airflow.",
+      "After orbit insertion, restart cabin fan 2 from the console.", "If fan 2 does not recover, keep fan 1 on high and report to ISTRAC at the next contact."],
+    safety: () => "Safe. Cabin temperature " + sim.env.temp.toFixed(1) + " degrees, limit 27 degrees. Fan 1 gives enough airflow." },
+  CO2_HIGH: { steps: ["Confirm the reading on the cabin page: carbon dioxide above 0.5 percent.", "Switch the carbon dioxide scrubber from bed A to bed B.",
+      "Watch the reading for 10 minutes; it should fall below 0.5 percent.", "If it passes 1.0 percent, close visors, go on suit loop and report to ISTRAC."],
+    safety: () => "Carbon dioxide " + sim.env.co2.toFixed(2) + " percent, limit 1.0 percent, " + toLimit(sim.env.co2, 1.0, sim.rate.co2) + ". Safe for now; the suit loop is the backup." },
+  CABIN_PRESS_LOW: { steps: ["Close visors and select suit loop now.", "Check the cabin vent valve position on the console.", "Close the cabin vent valve.",
+      "Confirm cabin pressure holds steady for 5 minutes.", "If pressure falls below 80 kilopascals, stay on suit loop and prepare for an early deorbit with ISTRAC."],
+    safety: () => "Cabin pressure " + sim.env.press.toFixed(1) + " kilopascals, limit 80 kilopascals, " + toLimit(sim.env.press, 80, sim.rate.press) + ". Crew is safe with visors closed and suit loop on." },
+  COMM1_LOSS: { steps: ["Check the link status on the console.", "Select communication link 2.", "Confirm ground contact returns at the next pass or relay window.",
+      "If both links fail, continue the timeline on board; the deorbit sequence is automatic."],
+    safety: () => "Safe. Only voice and telemetry to ground are affected; vehicle systems are normal." },
+};
 let sim;
-function simRestart() {
+function simRestart(running) {
   sim = {
-    t0: Date.now(), met0: 4 * 3600 + 8 * 60, // MET starts at 4 h 8 min, revolution 3
-    env: { temp: 22.1, press: 101.3, hum: 46, o2: 20.9, co2: 0.30 },
-    alerts: [], fired: new Set(), announce: [],
+    t: T_START, last: Date.now(), running, speed: +$("simSpeed").value || 4,
+    env: { temp: 22.1, press: 101.3, hum: 46, o2: 20.9, co2: 0.30 }, rate: { co2: 0, press: 0 },
+    alerts: [], fired: new Set(), fixed: new Set(), announce: [], said: [],
     lights: { spots: [true, false], zones: [true, true, true, true, false, false], dim: 70 },
     camera: "cabin wide", call: null,
   };
 }
-simRestart();
-const metS = () => sim.met0 + (Date.now() - sim.t0) / 1000;
-const fmtDur = s => { s = Math.max(0, Math.round(s)); const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+const fmtDur = s => { s = Math.max(0, Math.round(s)); if (s < 90) return s + " s"; const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
   return (d ? d + " d " : "") + (d || h ? h + " h " : "") + m + " min"; };
-function orbitAt(met) {
-  const u = 2 * Math.PI * (met + PH0) / PERIOD, i = INC * D2R;
-  const lat = Math.asin(Math.sin(i) * Math.sin(u)) / D2R;
-  let lon = Math.atan2(Math.cos(i) * Math.sin(u), Math.cos(u)) / D2R + LON0 - 360 * met / EARTH_DAY;
-  lon = ((lon + 540) % 360) - 180;
-  return { lat, lon, alt: ALT0 + 3 * Math.sin(u), rev: Math.floor(met / PERIOD) + 1 };
+const clock = t => { const s = Math.round(Math.abs(t)), p = n => String(n).padStart(2, "0"); return (t < 0 ? "T-" : "T+") + (s >= 3600 ? p(Math.floor(s / 3600)) + ":" : "") + p(Math.floor(s % 3600 / 60)) + ":" + p(s % 60); };
+function profileAt(t) {
+  t = Math.min(Math.max(t, T_START), T_SPLASH);
+  let i = 1; while (i < PROFILE.length - 1 && PROFILE[i][0] < t) i++;
+  const a = PROFILE[i - 1], b = PROFILE[i], f = (t - a[0]) / (b[0] - a[0] || 1);
+  return { alt: a[1] + (b[1] - a[1]) * f, vel: a[2] + (b[2] - a[2]) * f, g: a[3] + (b[3] - a[3]) * f };
+}
+function phaseAt(t) {
+  return t < 0 ? "launch countdown" : t < 135 ? "ascent, S200 boost" : t < 320 ? "ascent, L110 core stage" : t < T_INSERT ? "ascent, C25 cryogenic stage"
+    : t < T_DEORBIT ? "on-orbit coast" : t < T_BURN_END ? "deorbit burn" : t < T_ENTRY ? "coast to entry" : t < T_DROGUE ? "re-entry"
+    : t < T_SPLASH ? "parachute descent" : "splashdown, awaiting recovery";
+}
+const U0 = Math.asin(Math.sin(SHAR[0] * D2R) / Math.sin(INC * D2R));
+const lonOf = u => Math.atan2(Math.cos(INC * D2R) * Math.sin(u), Math.cos(u)) / D2R;
+function trackS(t) { // seconds of full orbital speed flown so far (slow at start of ascent and end of re-entry)
+  if (t <= 0) return 0;
+  if (t < T_INSERT) return t * t / (2 * T_INSERT);
+  if (t < T_ENTRY) return T_INSERT / 2 + (t - T_INSERT);
+  const tau = Math.min(t, T_SPLASH) - T_ENTRY, span = T_SPLASH - T_ENTRY;
+  return T_INSERT / 2 + (T_ENTRY - T_INSERT) + tau - tau * tau / (2 * span);
+}
+function posAt(t) {
+  t = Math.min(t, T_SPLASH);
+  if (t <= 0) return { lat: SHAR[0], lon: SHAR[1], rev: 0 };
+  const s = trackS(t), u = U0 + 2 * Math.PI * s / PERIOD;
+  const lat = Math.asin(Math.sin(INC * D2R) * Math.sin(u)) / D2R;
+  const lon = SHAR[1] + lonOf(u) - lonOf(U0) - 360 * t / EARTH_DAY;
+  return { lat, lon: ((lon % 360 + 540) % 360) - 180, rev: t < T_INSERT ? 0 : Math.floor(s / PERIOD) + 1 };
 }
 function gcKm(a, b, c, d) { const s = Math.sin((c - a) * D2R / 2) ** 2 + Math.cos(a * D2R) * Math.cos(c * D2R) * Math.sin((d - b) * D2R / 2) ** 2; return 2 * R_E * Math.asin(Math.sqrt(s)); }
-const inView = (o, st) => gcKm(o.lat, o.lon, st[1], st[2]) < 2000; // ponytail: fixed ~5° elevation footprint at 400 km
-function contactNow(met = metS()) { const o = orbitAt(met); return STATIONS.find(st => inView(o, st)) || null; }
-function nextPasses(n = 3) {
-  const now = metS(), out = [];
-  for (const st of STATIONS) {
-    let was = inView(orbitAt(now), st), aos = null;
-    for (let t = now + 10; t < now + 12 * 3600; t += 10) {
-      const v = inView(orbitAt(t), st);
-      if (v && !was) aos = t;
-      if (!v && was && aos) { out.push({ station: st[0], in: fmtDur(aos - now), duration: fmtDur(t - aos), _t: aos }); break; }
-      was = v;
+const active = id => sim.fired.has(id) && !sim.fixed.has(id);
+function linkAt(t) { // who could be heard at mission time t, ignoring faults
+  if (t >= T_MAIN) return "recovery ship";
+  if (t > T_ENTRY + 60 && t < T_ENTRY + 420) return null; // re-entry blackout
+  const o = posAt(t), st = STATIONS.find(st => gcKm(o.lat, o.lon, st[1], st[2]) < 2000); // ponytail: fixed ~5° elevation footprint
+  return st ? st[0] : t > T_INSERT && RELAY.some(([a, b]) => t >= a && t < b) ? "relay satellite" : null;
+}
+const contactNow = () => active("COMM1_LOSS") ? null : linkAt(sim.t);
+function nextContacts(n = 3) {
+  const out = []; let was = linkAt(sim.t), start = null;
+  for (let t = sim.t + 10; t <= T_SPLASH + 10 && out.length < n; t += 10) {
+    const v = linkAt(t);
+    if (v !== was) {
+      if (start !== null) out.push({ via: was, in: fmtDur(start - sim.t), duration: fmtDur(t - start) });
+      start = v ? t : null; was = v;
     }
   }
-  return out.sort((a, b) => a._t - b._t).slice(0, n).map(({ _t, ...p }) => p);
+  return out;
 }
+const nextEvents = (n = 3) => MILESTONES.filter(m => m[0] > sim.t).slice(0, n).map(m => ({ event: m[1], in: fmtDur(m[0] - sim.t) }));
 function region(lat, lon) { // ponytail: crude boxes, good enough for a demo
+  if (lat > 5 && lat < 24 && lon > 50 && lon < 72) return "Arabian Sea";
+  if (lat > 5 && lat < 18 && lon > 82 && lon < 94) return "Bay of Bengal";
   if (lat > 8 && lat < 36 && lon > 68 && lon < 97) return "India";
   if (lat < -55) return "Southern Ocean";
   if (lon > 20 && lon < 120 && lat < 25) return "Indian Ocean";
   if (lon >= 120 || lon < -80) return lat > 50 ? "North Pacific" : "Pacific Ocean";
   if (lon >= -80 && lon < -35) return lat > 15 ? "North America" : lat > -55 ? "South America" : "Southern Ocean";
   if (lon >= -35 && lon < 15 && (lat < 35 || lon < -10)) return lat > 0 && lon > -18 ? "Africa" : "Atlantic Ocean";
-  return lat > 35 ? "Europe and Asia" : "Africa and Arabia";
+  return lon > 60 ? "Asia" : lat > 35 ? "Europe" : "Africa and Arabia";
 }
 const walk = (v, target, k, noise, lo, hi) => Math.min(hi, Math.max(lo, v + (target - v) * k + (Math.random() - 0.5) * noise));
+function say(text, keep) { sim.announce.push({ text, at: Date.now(), keep }); sim.said.push(text); if (sim.said.length > 4) sim.said.shift(); }
 function simTick() {
-  const e = sim.env, el = (Date.now() - sim.t0) / 1000;
-  for (const [at, id, text, eff] of SCRIPT) if (el >= at && !sim.fired.has(id)) {
-    sim.fired.add(id); sim.alerts.push({ id, text, level: "caution", acknowledged: false, effect: eff }); sim.announce.push(text);
+  const now = Date.now(), dtm = sim.running ? (now - sim.last) / 1000 * sim.speed : 0; sim.last = now;
+  if (!sim.running) return;
+  sim.t = Math.min(sim.t + dtm, T_END);
+  for (const [t, name, text] of MILESTONES) if (sim.t >= t && !sim.fired.has(name)) { sim.fired.add(name); say(text, false); }
+  for (const [id, a] of Object.entries(ANOM)) if (sim.t >= a.t && !sim.fired.has(id)) {
+    sim.fired.add(id); sim.alerts.push({ id, text: a.text, level: a.level, acknowledged: false });
+    say((a.level === "warning" ? "Warning. " : "Caution. ") + a.text + ".", true);
   }
-  const co2Alert = sim.alerts.find(a => a.effect === "co2" && !a.acknowledged);
-  e.temp = walk(e.temp, 22, 0.02, 0.06, 18, 27); e.press = walk(e.press, 101.3, 0.02, 0.04, 99, 103);
+  const e = sim.env, p0 = e.press, c0 = e.co2;
+  e.temp = walk(e.temp, active("FAN2_LOW") ? 24.5 : 22, 0.02, 0.06, 18, 30);
   e.hum = walk(e.hum, 46, 0.02, 0.3, 30, 70); e.o2 = walk(e.o2, 20.9, 0.03, 0.04, 19.5, 23);
-  e.co2 = walk(e.co2, co2Alert ? 0.58 : 0.30, 0.03, 0.008, 0.1, 1);
-  if (sim.call && !contactNow()) { sim.call = null; sim.announce.push("Call dropped: loss of signal."); }
+  e.co2 = walk(e.co2, active("CO2_HIGH") ? 0.95 : 0.30, 0.012, 0.006, 0.1, 1.5);
+  e.press = active("CABIN_PRESS_LOW") ? Math.max(60, e.press - 0.006 * dtm) : walk(e.press, 101.3, 0.01, 0.04, 60, 103);
+  if (dtm > 0) { // trend per mission minute, smoothed
+    sim.rate.co2 = 0.95 * sim.rate.co2 + 0.05 * (e.co2 - c0) / dtm * 60;
+    sim.rate.press = 0.95 * sim.rate.press + 0.05 * (e.press - p0) / dtm * 60;
+  }
+  if (sim.call && !contactNow()) { sim.call = null; say("Call dropped: loss of signal.", true); }
 }
 function snapshot(section) {
-  const met = metS(), o = orbitAt(met), st = contactNow(met), e = sim.env, L = sim.lights;
+  const t = sim.t, o = posAt(t), pr = profileAt(t), link = contactNow(), e = sim.env, L = sim.lights, nx = nextEvents(1)[0];
   const all = {
-    mission: { phase: "on-orbit coast", mission_elapsed_time: fmtDur(met), revolution: o.rev,
-      altitude: Math.round(o.alt) + " km", velocity: "7.67 km/s", inclination: INC + " deg",
+    mission: { phase: sim.running ? phaseAt(t) : "launch countdown, on hold", mission_clock: (t < 0 ? "T minus " : "T plus ") + fmtDur(Math.abs(t)),
+      revolution: o.rev || "not in orbit yet", altitude: (pr.alt < 10 ? pr.alt.toFixed(1) : Math.round(pr.alt)) + " km", velocity: pr.vel.toFixed(2) + " km/s",
+      g_load: t >= T_INSERT && pr.g < 0.05 ? "0 g, weightless" : pr.g.toFixed(1) + " g", inclination: INC + " deg",
       latitude: Math.abs(o.lat).toFixed(1) + (o.lat >= 0 ? " N" : " S"), longitude: Math.abs(o.lon).toFixed(1) + (o.lon >= 0 ? " E" : " W"),
-      over: region(o.lat, o.lon), ground_contact: st ? "in contact with " + st[0] : "no ground contact" },
+      over: t <= 0 ? "Sriharikota launch pad" : region(o.lat, o.lon),
+      ground_contact: link ? "in contact via " + link : active("COMM1_LOSS") ? "no contact, link 1 lost" : "no ground contact",
+      next_event: nx ? nx.event + " in " + nx.in : "none, mission complete" },
     cabin: { simulated: true, temperature: e.temp.toFixed(1) + " C", pressure: e.press.toFixed(1) + " kPa",
       humidity: Math.round(e.hum) + " %", oxygen: e.o2.toFixed(1) + " %", carbon_dioxide: e.co2.toFixed(2) + " %" },
-    alerts: sim.alerts.length ? sim.alerts.map(({ effect, ...a }) => a) : "no cautions or warnings",
+    alerts: sim.alerts.length ? sim.alerts.map(a => ({ ...a, status: active(a.id) ? "active" : "resolved" })) : "no cautions or warnings",
     lights: { spots_on: L.spots.flatMap((v, i) => v ? [i + 1] : []), zones_on: L.zones.flatMap((v, i) => v ? [i + 1] : []), dim_percent: L.dim },
     camera: { view: sim.camera, available: CAMERAS },
-    calls: { active: sim.call || "none", contacts: CONTACTS, calls_possible: st ? "yes" : "no, needs ground contact" },
+    calls: { active: sim.call || "none", contacts: CONTACTS, calls_possible: link ? "yes" : "no, needs ground contact" },
     computer: { status: "normal", cpu: Math.round(30 + 10 * Math.random()) + " %", display: "nominal" },
   };
   return section && all[section] ? all[section] : all;
 }
+const COMMANDS = Object.values(ANOM).map(a => a.fix);
 const TOOLS = [
-  { name: "console_status", description: "Live console readings. section: mission (phase, MET, orbit, position, ground contact), cabin, alerts, lights, camera, calls, computer, or all.",
+  { name: "console_status", description: "Live console readings. section: mission (phase, mission clock, altitude, velocity, g load, position, ground contact, next event), cabin, alerts, lights, camera, calls, computer, or all.",
     input_schema: { type: "object", properties: { section: { type: "string", enum: ["mission", "cabin", "alerts", "lights", "camera", "calls", "computer", "all"] } }, required: ["section"] } },
-  { name: "mission_timeline", description: "Upcoming ground-station passes (AOS) with time until and duration.",
+  { name: "mission_timeline", description: "Upcoming mission events and upcoming ground or relay contacts, with time until each.",
     input_schema: { type: "object", properties: {} } },
+  { name: "get_sop", description: "Procedure for a caution or warning: the ordered steps, the console command that fixes it, and a live safety assessment. Omit alert_id for the latest active alert.",
+    input_schema: { type: "object", properties: { alert_id: { type: "string", enum: Object.keys(ANOM) } } } },
+  { name: "console_command", description: "Run a system command from the console on the crew's request.",
+    input_schema: { type: "object", properties: { command: { type: "string", enum: COMMANDS } }, required: ["command"] } },
   { name: "set_cabin_lights", description: "Change cabin lights. Spots 1-2, zones 1-6. dim_percent snaps to steps of 5.",
     input_schema: { type: "object", properties: { spots_on: { type: "array", items: { type: "integer" } }, spots_off: { type: "array", items: { type: "integer" } },
       zones_on: { type: "array", items: { type: "integer" } }, zones_off: { type: "array", items: { type: "integer" } }, all_off: { type: "boolean" }, all_on: { type: "boolean" }, dim_percent: { type: "integer" } } } },
@@ -354,7 +458,21 @@ function runTool(name, a) {
   const L = sim.lights;
   switch (name) {
     case "console_status": return snapshot(a.section);
-    case "mission_timeline": return { next_passes: nextPasses() };
+    case "mission_timeline": return { mission_clock: snapshot("mission").mission_clock, next_events: nextEvents(), next_contacts: nextContacts() };
+    case "get_sop": {
+      const id = a.alert_id || [...sim.alerts].reverse().find(x => active(x.id))?.id;
+      if (!id || !sim.fired.has(id)) return { done: false, reason: "no such alert right now", alerts: snapshot("alerts") };
+      return { alert: ANOM[id].text, level: ANOM[id].level, status: active(id) ? "active" : "resolved", steps: SOPS[id].steps.map((s, i) => (i + 1) + ". " + s),
+        fix_command: ANOM[id].fix, safety_now: SOPS[id].safety(), note: "Demo procedure for a simulated fault, not a flight procedure." };
+    }
+    case "console_command": {
+      const id = Object.keys(ANOM).find(k => ANOM[k].fix === a.command);
+      if (!id) return { done: false, reason: "unknown command" };
+      if (!active(id)) return { done: false, reason: "no fault on that system, nothing changed" };
+      if (id === "FAN2_LOW" && sim.t < T_INSERT) return { done: false, reason: "fan restart is not allowed during ascent; wait for orbit insertion" };
+      sim.fixed.add(id);
+      return { done: true, command: a.command, effect: ANOM[id].text + " fault cleared; readings will return to normal over the next minutes" };
+    }
     case "set_cabin_lights": {
       const set = (arr, ids, v) => (ids || []).forEach(i => { if (i >= 1 && i <= arr.length) arr[i - 1] = v; });
       if (a.all_off) { L.spots.fill(false); L.zones.fill(false); }
@@ -366,7 +484,7 @@ function runTool(name, a) {
     case "set_camera": if (!CAMERAS.includes(a.view)) return { done: false, reason: "unknown view" }; sim.camera = a.view; return { done: true, view: a.view };
     case "video_call":
       if (a.action === "hang_up") { const was = sim.call; sim.call = null; return was ? { done: true, ended: was } : { done: false, reason: "no active call" }; }
-      if (!contactNow()) return { done: false, reason: "no ground contact", next_pass: nextPasses(1)[0] };
+      if (!contactNow()) return { done: false, reason: snapshot("mission").ground_contact, next_contact: nextContacts(1)[0] };
       if (!CONTACTS.includes(a.contact)) return { done: false, reason: "unknown contact", contacts: CONTACTS };
       sim.call = a.contact; return { done: true, connected: a.contact };
     case "acknowledge_alert": {
@@ -378,40 +496,60 @@ function runTool(name, a) {
   return { done: false, reason: "unknown tool" };
 }
 function renderHud() {
-  const s = snapshot(), m = s.mission, c = s.cabin, nx = nextPasses(1)[0];
+  const s = snapshot(), m = s.mission, c = s.cabin, nc = nextContacts(1)[0], e = sim.env;
   const row = (k, v, cls = "") => `<div><span>${k}</span><b class="${cls}">${v}</b></div>`;
-  const alerts = sim.alerts.filter(a => !a.acknowledged);
+  const open = sim.alerts.filter(a => active(a.id)), warn = open.some(a => a.level === "warning");
   $("hud").innerHTML =
-    row("MET", m.mission_elapsed_time) + row("Rev", m.revolution) + row("Alt", m.altitude) +
-    row("Position", m.latitude + " " + m.longitude) + row("Over", m.over) +
-    row("Contact", m.ground_contact.replace("in contact with ", ""), m.ground_contact.startsWith("in") ? "ok" : "") +
-    row("Next AOS", nx ? nx.station + " in " + nx.in : "—") +
-    row("Temp", c.temperature) + row("Press", c.pressure) + row("O₂", c.oxygen) +
-    row("CO₂", c.carbon_dioxide, sim.env.co2 > 0.5 ? "warn" : "") + row("Humidity", c.humidity) +
+    row("Clock", clock(sim.t) + (sim.running ? "" : " HOLD")) + row("Phase", m.phase) + row("Next", m.next_event) +
+    row("Altitude", m.altitude) + row("Velocity", m.velocity) + row("G load", m.g_load.replace(", weightless", "")) +
+    row("Position", m.latitude + " " + m.longitude) + row("Over", m.over) + row("Rev", sim.t >= T_INSERT ? m.revolution : "—") +
+    row("Contact", m.ground_contact.replace("in contact via ", ""), m.ground_contact.startsWith("in") ? "ok" : "") +
+    row("Next contact", nc ? nc.via + " in " + nc.in : "—") +
+    row("Temp", c.temperature, e.temp > 24 ? "warn" : "") + row("Press", c.pressure, e.press < 99 ? "bad" : "") + row("O₂", c.oxygen) +
+    row("CO₂", c.carbon_dioxide, e.co2 > 0.5 ? "warn" : "") + row("Humidity", c.humidity) +
     row("Lights", "S" + s.lights.spots_on.join(",") + " Z" + s.lights.zones_on.join(",") + " " + s.lights.dim_percent + "%") +
     row("Camera", sim.camera) + row("Call", sim.call || "none") +
-    row("Alerts", alerts.length ? alerts.map(a => a.text.replace("Caution: ", "")).join("; ") : "none", alerts.length ? "warn" : "ok");
+    row("Alerts", open.length ? open.map(a => a.text + (a.acknowledged ? " (ack)" : "")).join("; ") : "none", open.length ? (warn ? "bad" : "warn") : "ok");
+  $("simStart").textContent = sim.running || sim.t > T_START ? "↺ Restart" : "▶ Start mission";
+  $("simPause").textContent = sim.running ? "❚❚ Hold" : "▶ Resume"; $("simPause").hidden = sim.t <= T_START && !sim.running;
 }
+simRestart(false);
 setInterval(() => {
   simTick(); renderHud();
-  if (sim.announce.length && state === "idle" && ctx && !turn) { // Arya calls out new alerts, like HUD wait_for_event
-    const text = sim.announce.shift(), ac = turn = new AbortController();
+  while (sim.announce.length && !sim.announce[0].keep && Date.now() - sim.announce[0].at > 25000) log("Arya", sim.announce.shift().text + " (not spoken, crew was talking)");
+  if (sim.announce.length && state === "idle" && ctx && !turn) { // Arya calls out events and alerts, like HUD wait_for_event
+    const text = sim.announce.shift().text, ac = turn = new AbortController();
     log("Arya", text); setState("speaking", "Tap the button to stop Arya.");
     speak(text, ac.signal).catch(e => { if (!ac.signal.aborted) log("Error", e.message); })
       .finally(() => { if (turn === ac) { turn = null; setState("idle"); } });
   }
 }, 1000);
-$("simRestart").onclick = () => { simRestart(); renderHud(); log("Sim", "Simulator restarted: MET 4 h 8 min, alerts at +2 and +7 minutes."); };
+$("simStart").onclick = () => { simRestart(true); history = []; renderHud(); log("Sim", "Mission started at T minus 10 minutes, " + sim.speed + "× speed. Launch to splashdown takes about " + Math.round((T_SPLASH - T_START) / sim.speed / 60) + " minutes."); };
+$("simPause").onclick = () => { sim.running = !sim.running; sim.last = Date.now(); renderHud(); };
+$("simSpeed").onchange = () => { sim.speed = +$("simSpeed").value; };
 
 // ---------- Claude brain (with console tools) ----------
 function demoContext() {
-  const open = sim.alerts.filter(a => !a.acknowledged).map(a => a.id + " (" + a.text + ")").join(", ");
+  const open = sim.alerts.filter(a => active(a.id)).map(a => a.id + " (" + a.level + ": " + a.text + (a.acknowledged ? ", acknowledged" : ", not acknowledged") + ")").join(", ");
   return `
 
-## Demo console
-The Console Telemetry tools are a live simulator on this page: every value is simulated, and changes in real time. Always call a tool for fresh values.
-Unacknowledged alerts right now: ${open || "none"}. When the crew says "it" or "that alert", they mean the latest of these.
-Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to you, even without your name." : "always listening — follow the When to speak rules strictly."}`;
+## Demo mission simulator
+The Console Telemetry tools are a live mission simulator on this page: HLVM3 launch countdown, ascent, one orbit, re-entry and splashdown. Every value is simulated and changes in real time, so always call a tool for fresh values. The simulator runs ${sim.speed} times faster than real time; give times exactly as the tools return them.
+Mission clock now: ${clock(sim.t)}${sim.running ? "" : " (on hold, mission not started)"}. Phase: ${phaseAt(sim.t)}.
+Active alerts right now: ${open || "none"}. When the crew says "it" or "that alert", they mean the latest of these.
+You do speak on your own: this console announces every new caution, warning and mission event aloud in your voice the moment it happens, without the crew asking. Never say that you can only speak when spoken to. If the crew asks you to tell them about alerts, say that you already call them out as they come.
+You recently said aloud, on your own: ${sim.said.map(t => '"' + t + '"').join(" ") || "nothing"}. If the crew answers one of these (for example "confirmed" or "yes, done"), acknowledge it in a few words.
+Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to you, even without your name." : "always listening — follow the When to speak rules strictly."}
+
+## Procedures
+- When the crew asks what to do about a caution or warning, call get_sop. Say only the next step, in one or two sentences, then wait until the crew says it is done before you give the following step. The first time, say once that it is a demo procedure.
+- When the crew asks how safe it is, or how much time they have, answer from safety_now in get_sop: the value, its limit and the trend.
+- Use console_command only when the crew asks for that action or says yes to it. If it answers done false, say why nothing changed.
+- For a warning, give the first step straight away without being asked twice.
+
+## ISRO terms
+Write these exactly in this form; the speech system knows how to say them. Never spell them letter by letter.
+ISRO; ISTRAC = ISRO Telemetry, Tracking and Command Network, Bengaluru; SHAR or SDSC = Satish Dhawan Space Centre, Sriharikota; MOX = Mission Operations Complex; HSFC = Human Space Flight Centre; VSSC = Vikram Sarabhai Space Centre; LPSC = Liquid Propulsion Systems Centre; URSC = U R Rao Satellite Centre; SAC = Space Applications Centre, Ahmedabad; HLVM3 = human-rated LVM3 launch vehicle with S200 boosters, L110 core stage and C25 cryogenic stage; CES = crew escape system; CM = crew module; SM = service module; ECLSS = life support; MET = mission elapsed time; AOS and LOS = acquisition and loss of signal.`;
 }
 async function claude(messages, signal) {
   for (let attempt = 0; ; attempt++) {
@@ -453,6 +591,13 @@ async function think(userText, signal) {
 
 // ---------- Sonic TTS: streamed, plays as the audio arrives ----------
 const TTS_RATE = 24000;
+function spoken(text) { // apply the pronunciation list; the log keeps the written form
+  for (const line of $("lex").value.split("\n")) {
+    const [w, say] = line.split("=").map(x => x.trim());
+    if (w && say) try { text = text.replace(new RegExp("\\b" + w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "g"), say); } catch {}
+  }
+  return text;
+}
 function stopAudio() { for (const s of playing) { try { s.stop(); } catch {} } playing = []; }
 async function speak(text, signal) { // resolves with ms until first audio
   const t0 = performance.now();
@@ -461,7 +606,7 @@ async function speak(text, signal) { // resolves with ms until first audio
     method: "POST",
     headers: { "Authorization": "Bearer " + await getToken(), "Cartesia-Version": CARTESIA_VERSION, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model_id: TTS_MODEL, transcript: text, language: /[ऀ-ॿ]/.test(text) ? "hi" : "en", // Devanagari → Hindi voice
+      model_id: TTS_MODEL, transcript: spoken(text), language: /[ऀ-ॿ]/.test(text) ? "hi" : "en", // Devanagari → Hindi voice
       voice: { mode: "id", id: $("voice").value.trim() || DEFAULT_VOICE },
       output_format: { container: "raw", encoding: "pcm_s16le", sample_rate: TTS_RATE },
     }),
@@ -590,7 +735,7 @@ $("test").onclick = async () => {
   const ac = turn = new AbortController();
   try {
     try { ctx ||= new (window.AudioContext || window.webkitAudioContext)(); await ctx.resume(); } catch {}
-    log("Test", "Page version 7. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
+    log("Test", "Page version 8. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
     const micOk = await step("Microphone access", async () => { await startAudio(); return "allowed"; });
     setState("thinking", "Running test… (tap the button to cancel)"); // keeps the mic from starting a turn during the test
     if (micOk) await step("Microphone sound", async () => {
@@ -601,10 +746,14 @@ $("test").onclick = async () => {
       return "working, peak level " + peak.toFixed(3) + " (voice threshold " + $("sens").value + ")";
     });
     const okC = await step("Cartesia key → access token", async () => { token = null; const t = performance.now(); await getToken(); return secs(performance.now() - t); });
-    let reply = "Arya online.";
+    if (okC) await step("Ink speech-to-text", async () => {
+      const u = startUtterance([new ArrayBuffer(STT_RATE)]); // half a second of silence
+      await u.end(); return "connected" + (keytermsOk ? ", keyterms on" : ", keyterms off");
+    });
+    let reply = "Arya online. ISTRAC and ISRO.";
     await step("Claude (" + $("model").value + ")", async () => {
       const saved = history, t = performance.now(); history = [];
-      try { reply = await think("Push-to-talk test. Reply with exactly: Arya online.", ac.signal); } finally { history = saved; }
+      try { reply = await think("Push-to-talk test. Reply with exactly: Arya online. ISTRAC and ISRO.", ac.signal); } finally { history = saved; }
       return reply + " (" + secs(performance.now() - t) + ")";
     });
     if (okC && turn === ac) await step("Sonic voice", async () => "first audio after " + secs(await speak(reply, ac.signal)));
