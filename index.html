@@ -127,7 +127,10 @@ const aryaDefault = $("aryaDefault").textContent.trim();
 const fields = { cKey:"", aKey:"", model:"claude-haiku-5-5", voice:DEFAULT_VOICE, sens:"0.015", silence:"900", prompt:aryaDefault };
 for (const [k, d] of Object.entries(fields)) {
   $(k).value = store.get(k, d);
-  $(k).addEventListener("change", () => { store.set(k, $(k).value); if (k === "cKey") token = null; drawThr(); });
+  $(k).addEventListener("input", () => {
+    store.set(k, $(k).value.trim()); if (k === "cKey") token = null; drawThr();
+    if (k === "cKey" || k === "aKey") status(($("cKey").value.trim() ? "Cartesia key ✓  " : "Cartesia key missing  ") + ($("aKey").value.trim() ? "Anthropic key ✓" : "Anthropic key missing"));
+  });
 }
 $("resetPrompt").onclick = () => { $("prompt").value = aryaDefault; store.set("prompt", aryaDefault); };
 if (!$("cKey").value || !$("aKey").value) $("settings").open = true;
