@@ -165,7 +165,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 77; // bump on every push; shown at the bottom of the page
+const VERSION = 78; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -796,6 +796,7 @@ function snapshot(section) {
       over: t <= 0 ? "Sriharikota launch pad" : region(o.lat, o.lon),
       ground_contact: link ? "in contact via " + link : active("COMM1_LOSS") ? "no contact, link 1 lost" : "no ground contact",
       next_event: nx ? nx.event + " in " + nx.in : "none, mission complete" },
+    fans: { cabin_fan_1: "running", cabin_fan_2: active("FAN2_LOW") ? "speed low" : "running" },
     cabin: { simulated: true, temperature: e.temp.toFixed(1) + " C", pressure: e.press.toFixed(1) + " kPa",
       humidity: Math.round(e.hum) + " %", oxygen: e.o2.toFixed(1) + " %", carbon_dioxide: e.co2.toFixed(2) + " %" },
     alerts: sim.alerts.length ? sim.alerts.map(a => ({ ...a, status: active(a.id) ? "active" : "resolved" })) : "no cautions or warnings",
@@ -867,7 +868,7 @@ const TOOLS = [
     input_schema: { type: "object", properties: {} } },
   { name: "get_sop", description: "Procedure for a caution or warning: the ordered steps, the console command that fixes it, and a live safety assessment. Omit alert_id for the latest active alert.",
     input_schema: { type: "object", properties: { alert_id: { type: "string", enum: Object.keys(ANOM) } } } },
-  { name: "console_command", description: "Run a system command from the console on the crew's request.",
+  { name: "console_command", description: "Run a system command from the console. Only when the crew asks for that action or says yes to your offer; a crew member confirming an earlier procedure step is not a request to run the next one.",
     input_schema: { type: "object", properties: { command: { type: "string", enum: COMMANDS } }, required: ["command"] } },
   { name: "set_cabin_lights", description: "Change cabin lights. Spots 1-2, zones 1-6. dim_percent snaps to steps of 5.",
     input_schema: { type: "object", properties: { spots_on: { type: "array", items: { type: "integer" } }, spots_off: { type: "array", items: { type: "integer" } },
@@ -1077,7 +1078,7 @@ Length: at most two short sentences, about 25 words, unless the crew asks for mo
 The Console Telemetry tools are a live mission simulator on this page: HLVM3 launch countdown, ascent, one orbit, re-entry and splashdown. Every value is simulated and changes in real time, so always call a tool for fresh values. The countdown runs in real time; after liftoff the simulator runs ${sim.speed} times faster than real time; give times exactly as the tools return them.
 Mission clock now: ${clock(sim.t)}${sim.running ? "" : sim.started ? " (on hold)" : " (mission not started yet)"}. Phase: ${phaseAt(sim.t)}.
 Active alerts right now: ${open || "none"}. When the crew says "it" or "that alert", they mean the latest of these.
-procedure_now in the snapshot holds the full procedure of every active alert, in order. When the crew asks what to do, give step 1 first, then the next step each time they confirm one. Never skip a step, never change the order, and never work out a step from a command name; only the crew saying a step is done lets you move on. If the crew asks whether an earlier step was missed, check procedure_now and say plainly which step it is.
+procedure_now in the snapshot holds the full procedure of every active alert, in order. When the crew asks what to do, give step 1 first, then the next step each time they confirm one. Never skip a step, never change the order, and never work out a step from a command name; only the crew saying a step is done lets you move on. When the next step is something you can do from the console, read the step and offer it ("Shall I switch to flight computer 2?"); run it only after the crew says yes. If the crew asks whether an earlier step was missed, check procedure_now and say plainly which step it is.
 When the crew asks "what happened?", "what was that?" or asks you to say it again just after you announced something on your own, they mean that announcement (the last item in the list below), not your last answer.
 You do speak on your own: this console announces every new caution, warning and mission event aloud in your voice the moment it happens, without the crew asking. Never say that you can only speak when spoken to. If the crew asks you to tell them about alerts, say that you already call them out as they come.
 When you call set_cabin_lights, set_camera or set_reminder, write in the same message, together with the call, the one short sentence the crew will hear, in the crew's language, saying exactly what is done or set ("All cabin lights are off.", "30 second में सारी lights बंद हो जाएंगी।"). The console speaks that sentence if the action works, so do not write "I will check" or a question there.
@@ -1112,7 +1113,7 @@ async function translateHi(text, signal) {
         messages: [{ role: "system", content: HINDI_RULES }, { role: "user", content: text }] }) }, 30000, signal);
     if (!r.ok) throw new Error("LLM: " + r.status + " " + (await r.text()).slice(0, 120));
     const j = await r.json(); addUsage(base, j.usage);
-    const out = String(j.choices?.[0]?.message?.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    const out = String(j.choices?.[0]?.message?.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").replace(/^[\s\S]*<\/think>/, "").trim();
     if (!/[\u0900-\u097F]/.test(out)) throw new Error("no Hindi came back");
     return out;
   }
@@ -1194,7 +1195,7 @@ async function openModel(messages, signal, model = $("oModel").value.trim()) {
     if (r.ok) {
       const j = await r.json(), msg = j.choices?.[0]?.message || {}, content = [];
       addUsage(base, j.usage);
-      const text = String(msg.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim(); // drop a reasoning model's private thinking
+      const text = String(msg.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").replace(/^[\s\S]*<\/think>/, "").trim(); // drop a reasoning model's private thinking
       if (text) content.push({ type: "text", text });
       (msg.tool_calls || []).forEach((c, i) => {
         let input = {}; try { input = JSON.parse(c.function?.arguments || "{}") || {}; } catch {} // a small model may write broken JSON: run the tool with no input, it will answer done false
