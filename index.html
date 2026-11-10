@@ -54,6 +54,7 @@
   <div class="meter" title="Mic level / voice threshold"><i id="lvl"></i><b id="thr"></b></div>
 
   <div id="log"></div>
+  <div class="hudbar"><span id="copied"></span><button id="copyLog">Copy log for diagnosis</button></div>
 
   <div class="hudbar"><span>Mission (simulated)</span><div>
     <select id="simSpeed" title="Simulator speed"><option value="1">1× real time</option><option value="4" selected>4× (30 min mission)</option><option value="12">12× (10 min)</option></select>
@@ -135,7 +136,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 29; // bump on every push; shown at the bottom of the page
+const VERSION = 30; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -186,15 +187,30 @@ function setState(s, msg) {
   }[s];
   status(msg ?? (s === "idle" ? (mode === "always" ? 'Say "Arya, …" to talk to her.' : "Mic is muted. Tap to unmute, or hold while you speak.") : ""));
 }
-function status(msg, err) { $("status").textContent = msg; $("status").className = err ? "err" : ""; }
+function status(msg, err) {
+  if (msg && (err || /^Ink \d/.test(msg))) record.push(clock(sim.t) + (err ? " [error shown] " : " [timing] ") + msg); $("status").textContent = msg; $("status").className = err ? "err" : ""; }
+const record = []; // everything said and every error and timing, kept for the Copy button
 function log(who, text) {
+  record.push(clock(sim.t) + " " + who + ": " + text);
   const d = document.createElement("div");
   d.className = "msg " + (who === "Arya" ? "arya" : "you");
   const w = document.createElement("div"); w.className = "who"; w.textContent = who;
   const t = document.createElement("div"); t.className = "t"; t.textContent = text;
   d.append(w, t); $("log").prepend(d); $("log").scrollTop = 0; // newest on top
 }
-$("clear").onclick = () => { $("log").innerHTML = ""; history = []; };
+$("clear").onclick = () => { $("log").innerHTML = ""; history = []; record.length = 0; };
+$("copyLog").onclick = async () => {
+  const text = ["Arya demo v" + VERSION + " | model " + $("model").value + " | mode " + mode + " | sim " + sim.speed + "x at " + clock(sim.t) + (sim.running ? "" : " HOLD"),
+    "mic: " + micDiag(), navigator.userAgent, "--- oldest first ---", ...record].join("\n");
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; }
+  catch { // older browsers: copy through a hidden text box
+    const ta = document.createElement("textarea"); ta.value = text; document.body.append(ta); ta.select();
+    try { ok = document.execCommand("copy"); } catch {} ta.remove();
+  }
+  $("copied").textContent = ok ? "Copied " + record.length + " lines. Paste it in the chat." : "Copy failed. Select the text in the log by hand.";
+  setTimeout(() => { $("copied").textContent = ""; }, 4000);
+};
 function drawThr() { $("thr").style.left = Math.min(100, +$("sens").value / 0.08 * 100) + "%"; }
 drawThr();
 
