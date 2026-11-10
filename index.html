@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Arya — Voice Demo</title>
+<style>
+  :root { --bg:#0b0f17; --panel:#141a26; --line:#243045; --text:#e6edf7; --dim:#8a97ad; --acc:#ff8a1f; --ok:#3ecf8e; --err:#ff5c5c; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.4 -apple-system, system-ui, sans-serif;
+         padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  main { max-width:760px; margin:0 auto; padding:16px; display:flex; flex-direction:column; gap:14px; min-height:100vh; }
+  header { display:flex; align-items:center; justify-content:space-between; }
+  h1 { margin:0; font-size:22px; letter-spacing:.5px; } h1 span { color:var(--acc); }
+  button { font:inherit; color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:8px 14px; }
+  .seg { display:flex; border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+  .seg button { flex:1; border:0; border-radius:0; padding:12px; background:var(--panel); }
+  .seg button.on { background:var(--acc); color:#000; font-weight:600; }
+  #talk { align-self:center; width:180px; height:180px; border-radius:50%; font-size:18px; font-weight:600;
+          border:3px solid var(--line); background:var(--panel); touch-action:none; user-select:none;
+          -webkit-user-select:none; -webkit-touch-callout:none; transition:all .15s; }
+  #talk.listening { border-color:var(--acc); background:#2a1a08; box-shadow:0 0 30px #ff8a1f55; }
+  #talk.thinking { border-color:#6aa3ff; } #talk.speaking { border-color:var(--ok); }
+  #status { text-align:center; color:var(--dim); min-height:1.4em; } #status.err { color:var(--err); }
+  .meter { height:6px; background:var(--panel); border-radius:3px; overflow:hidden; position:relative; }
+  .meter i { position:absolute; inset:0 auto 0 0; width:0; background:var(--ok); }
+  .meter b { position:absolute; top:0; bottom:0; width:2px; background:var(--acc); }
+  #log { flex:1; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; overflow-y:auto; min-height:200px; }
+  .msg { margin:0 0 10px; } .msg .who { font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; }
+  .msg.arya .who { color:var(--acc); } .msg .t { white-space:pre-wrap; }
+  details { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:10px 14px; }
+  summary { cursor:pointer; color:var(--dim); }
+  label { display:block; margin-top:10px; font-size:13px; color:var(--dim); }
+  input, select, textarea { width:100%; font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px; margin-top:4px; }
+  textarea { min-height:220px; font-size:13px; font-family:ui-monospace, Menlo, monospace; }
+  .row { display:flex; gap:8px; margin-top:10px; }
+  .hint { font-size:12px; color:var(--dim); margin-top:6px; }
+</style>
+</head>
+<body>
+<main>
+  <header><h1><span>ARYA</span> voice demo</h1><button id="clear">Clear</button></header>
+
+  <div class="seg" id="mode">
+    <button data-mode="ptt">Push to talk</button>
+    <button data-mode="always">Always listening</button>
+  </div>
+
+  <button id="talk">Tap to start</button>
+  <div id="status">Open Settings, enter both API keys, then tap the button.</div>
+  <div class="meter" title="Mic level / voice threshold"><i id="lvl"></i><b id="thr"></b></div>
+
+  <div id="log"></div>
+
+  <details id="settings">
+    <summary>Settings</summary>
+    <label>Cartesia API key<input id="cKey" type="password" autocomplete="off" placeholder="sk_car_..."></label>
+    <label>Anthropic API key<input id="aKey" type="password" autocomplete="off" placeholder="sk-ant-..."></label>
+    <label>Claude model
+      <select id="model">
+        <option value="claude-haiku-5-5">claude-haiku-5-5 (fastest)</option>
+        <option value="claude-sonnet-5-5">claude-sonnet-5-5</option>
+        <option value="claude-opus-5-5">claude-opus-5-5</option>
+      </select></label>
+    <label>Sonic voice ID (Indian-accent English)<input id="voice" autocomplete="off"></label>
+    <div class="hint">Default: Aarti (Indian-accent female). Pick any voice ID from play.cartesia.ai and paste it here.</div>
+    <label>Voice threshold (always-listening mode)<input id="sens" type="range" min="0.002" max="0.08" step="0.001"></label>
+    <label>Silence before end of turn (ms)<input id="silence" type="number" min="300" max="3000" step="100"></label>
+    <label>Arya system prompt<textarea id="prompt"></textarea></label>
+    <div class="row"><button id="resetPrompt">Reset prompt to ARYA.md</button></div>
+    <div class="hint">Keys are saved only in this browser (localStorage). Nothing is stored in the page code.</div>
+  </details>
+</main>
+
+<script type="text/plain" id="aryaDefault"># Arya: the crew console's voice assistant
+
+You are **Arya**, the voice assistant of the crew display console in the HLVM3 crew module. The crew talk to you while they work, and you answer by voice.
+
+## Language
+- Speak **English only**. Always answer in English, even when someone speaks Hindi or another language to you.
+
+## When to speak
+- Answer only when someone speaks **to you**: they say "Arya", or they go on with a request they just made to you.
+- Speech between people (crew to crew, or crew to someone on a video call) is **not for you**: reply with only "..." and do nothing.
+- If you are not sure it was meant for you, reply with only "...".
+
+## What you help with
+Only the console and the mission:
+- the mission: phase, mission elapsed time, orbit, next events, ground-station passes
+- the cabin environment, cautions and warnings, the console computer
+- the cabin lights, the camera view, video calls
+
+For anything else, decline in one short sentence: "I can only help with the console and the mission."
+
+## How to answer
+- Keep it short and spoken: one or two sentences. Use no lists and no markdown, and read no symbols aloud.
+- Give numbers with their units, rounded to what matters: "cabin temperature 22 degrees", "altitude 418 kilometres".
+- Give times in hours and minutes ("in 1 hour 12 minutes"), never in raw seconds.
+- For simulated data (the cabin environment, the radio figures), say "simulated" once.
+- Say the console's values as they are; never work them out yourself.
+
+## Using the console tools
+- Use the Console Telemetry tools for every answer about the console or the mission; never guess.
+- To change something (lights, cameras, calls), call the tool straight away; it reads the console itself.
+- Before you **call** someone, **hang up**, **end all calls** or **reject** a call, say who and wait for a "yes".
+- If a tool answers done false, say what did not change. Never say it worked.
+- Never touch the mission itself (speed, pause, a jump in time): you cannot, and you must not.
+</script>
+
+<script>
+"use strict";
+const CARTESIA_VERSION = "2026-08-14";
+const STT_MODEL = "ink-2";
+const TTS_MODEL = "sonic-3.6";
+const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
+const STT_RATE = 16000;
+const $ = id => document.getElementById(id);
+let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, history = [];
+
+// ---------- settings (localStorage, per browser) ----------
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("arya." + k); return v === null ? d : v; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("arya." + k, v); } catch {} },
+};
+const aryaDefault = $("aryaDefault").textContent.trim();
+const fields = { cKey:"", aKey:"", model:"claude-haiku-5-5", voice:DEFAULT_VOICE, sens:"0.015", silence:"900", prompt:aryaDefault };
+for (const [k, d] of Object.entries(fields)) {
+  $(k).value = store.get(k, d);
+  $(k).addEventListener("change", () => { store.set(k, $(k).value); if (k === "cKey") token = null; drawThr(); });
+}
+$("resetPrompt").onclick = () => { $("prompt").value = aryaDefault; store.set("prompt", aryaDefault); };
+if (!$("cKey").value || !$("aKey").value) $("settings").open = true;
+
+let mode = store.get("mode", "ptt");
+function setMode(m) {
+  mode = m; store.set("mode", m);
+  document.querySelectorAll("#mode button").forEach(b => b.classList.toggle("on", b.dataset.mode === m));
+  if (utt) { utt.end(); utt = null; }
+  if (ctx) setState("idle");
+}
+document.querySelectorAll("#mode button").forEach(b => b.onclick = () => setMode(b.dataset.mode));
+setMode(mode);
+
+// ---------- UI ----------
+function setState(s, msg) {
+  state = s;
+  const t = $("talk");
+  t.className = s;
+  t.textContent = {
+    off: "Tap to start",
+    idle: mode === "ptt" ? "Hold to talk" : "Listening…",
+    listening: mode === "ptt" ? "Release to send" : "Hearing you…",
+    thinking: "Thinking…", speaking: "Speaking…",
+  }[s];
+  status(msg ?? (s === "idle" && mode === "always" ? 'Say "Arya, …" to talk to her.' : ""));
+}
+function status(msg, err) { $("status").textContent = msg; $("status").className = err ? "err" : ""; }
+function log(who, text) {
+  const d = document.createElement("div");
+  d.className = "msg " + (who === "Arya" ? "arya" : "you");
+  const w = document.createElement("div"); w.className = "who"; w.textContent = who;
+  const t = document.createElement("div"); t.className = "t"; t.textContent = text;
+  d.append(w, t); $("log").append(d); $("log").scrollTop = 1e9;
+}
+$("clear").onclick = () => { $("log").innerHTML = ""; history = []; };
+function drawThr() { $("thr").style.left = Math.min(100, +$("sens").value / 0.08 * 100) + "%"; }
+drawThr();
+
+// ---------- Cartesia access token (minted in-browser from your key) ----------
+async function getToken() {
+  if (token && Date.now() < tokenExp - 30000) return token;
+  const key = $("cKey").value.trim();
+  if (!key) throw new Error("Enter your Cartesia API key in Settings.");
+  let r;
+  try {
+    r = await fetch("https://api.cartesia.ai/access-token", {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + key, "Cartesia-Version": CARTESIA_VERSION, "Content-Type": "application/json" },
+      body: JSON.stringify({ grants: { stt: true, tts: true }, expires_in: 300 }),
+    });
+  } catch { throw new Error("Cartesia token request blocked by the browser (network/CORS)."); }
+  if (!r.ok) throw new Error("Cartesia token: " + r.status + " " + (await r.text()).slice(0, 200));
+  const j = await r.json();
+  token = j.token; tokenExp = Date.now() + (j.expires_in || 300) * 1000;
+  return token;
+}
+
+// ---------- Ink STT: one WebSocket per utterance ----------
+function startUtterance(initial) {
+  const queue = [...initial];
+  let ws = null, text = "", closing = false, resolveDone, rejectDone;
+  const done = new Promise((res, rej) => { resolveDone = res; rejectDone = rej; });
+  getToken().then(tok => {
+    const q = new URLSearchParams({ model: STT_MODEL, encoding: "pcm_s16le", sample_rate: STT_RATE, cartesia_version: CARTESIA_VERSION, access_token: tok });
+    ws = new WebSocket("wss://api.cartesia.ai/stt/websocket?" + q);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => { queue.forEach(b => ws.send(b)); queue.length = 0; if (closing) ws.send("close"); };
+    ws.onmessage = e => {
+      const m = JSON.parse(e.data);
+      if (m.type === "transcript" && m.is_final) text += m.text;
+      else if (m.type === "done") { resolveDone(text); ws.close(); }
+      else if (m.type === "error") rejectDone(new Error("Ink: " + (m.message || m.title)));
+    };
+    ws.onerror = () => rejectDone(new Error("Ink STT connection failed."));
+    ws.onclose = () => resolveDone(text);
+  }).catch(rejectDone);
+  return {
+    send(b) { if (ws && ws.readyState === 1) ws.send(b); else queue.push(b); },
+    end() {
+      closing = true;
+      if (ws && ws.readyState === 1) ws.send("close");
+      setTimeout(() => resolveDone(text), 8000); // ponytail: safety net if "done" never arrives
+      return done;
+    },
+  };
+}
+
+// ---------- Claude brain ----------
+const t0 = Date.now() - (2 * 86400 + 5 * 3600 + 14 * 60) * 1000; // demo launch: MET starts at 2d 5h 14m
+function demoContext() {
+  const met = Math.floor((Date.now() - t0) / 60000);
+  const nextPass = 92 - (met % 92);
+  return `
+
+## Demo mode (no console tools are connected)
+There are no Console Telemetry tools in this demo. Use only this simulated snapshot, and never invent other values:
+- Mission phase: on-orbit operations. Mission elapsed time: ${Math.floor(met / 1440)} days ${Math.floor(met % 1440 / 60)} hours ${met % 60} minutes.
+- Orbit: altitude 400 kilometres, inclination 51.6 degrees, period 92 minutes.
+- Next ground-station pass: ISTRAC Bengaluru in ${nextPass} minutes.
+- Cabin (simulated): temperature 22 degrees, pressure 101.3 kilopascals, oxygen 21 percent, carbon dioxide 0.3 percent, humidity 45 percent. No cautions or warnings.
+- Console computer: normal. Cabin lights: on, 70 percent. Camera view: cabin wide. Video calls: none active.
+If asked to change lights, cameras or calls, say the console is not connected in this demo, so nothing changed.
+Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to you, even without your name." : "always listening — follow the When to speak rules strictly."}`;
+}
+async function think(userText) {
+  const key = $("aKey").value.trim();
+  if (!key) throw new Error("Enter your Anthropic API key in Settings.");
+  history.push({ role: "user", content: userText });
+  history = history.slice(-12); // ponytail: short rolling memory, enough for a demo
+  if (history[0].role !== "user") history.shift();
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": key, "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true", "content-type": "application/json",
+    },
+    body: JSON.stringify({ model: $("model").value, max_tokens: 300, system: $("prompt").value + demoContext(), messages: history }),
+  });
+  if (!r.ok) { history.pop(); throw new Error("Claude: " + r.status + " " + (await r.text()).slice(0, 200)); }
+  const j = await r.json();
+  const reply = j.content.filter(c => c.type === "text").map(c => c.text).join("").trim() || "...";
+  history.push({ role: "assistant", content: reply });
+  return reply;
+}
+
+// ---------- Sonic TTS ----------
+async function speak(text) {
+  const r = await fetch("https://api.cartesia.ai/tts/bytes", {
+    method: "POST",
+    headers: { "Authorization": "Bearer " + await getToken(), "Cartesia-Version": CARTESIA_VERSION, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model_id: TTS_MODEL, transcript: text, language: "en",
+      voice: { mode: "id", id: $("voice").value.trim() || DEFAULT_VOICE },
+      output_format: { container: "wav", encoding: "pcm_s16le", sample_rate: 24000 },
+    }),
+  });
+  if (!r.ok) throw new Error("Sonic: " + r.status + " " + (await r.text()).slice(0, 200));
+  const buf = await ctx.decodeAudioData(await r.arrayBuffer());
+  const src = ctx.createBufferSource();
+  src.buffer = buf; src.connect(ctx.destination);
+  await new Promise(res => { src.onended = res; src.start(); });
+}
+
+// ---------- turn handling ----------
+async function finishTurn() {
+  const u = utt; utt = null;
+  if (!u) return;
+  setState("thinking", "Transcribing…");
+  try {
+    const text = (await u.end()).trim();
+    if (!text) { setState("idle", "Didn't catch anything."); return; }
+    log("You", text);
+    status("Arya is thinking…");
+    const reply = await think(text);
+    log("Arya", reply);
+    if (reply !== "..." && reply.replace(/[.\s…]/g, "")) { setState("speaking"); await speak(reply); }
+    setState("idle");
+  } catch (e) {
+    setState("idle"); status(e.message, true);
+  }
+}
+
+// ---------- microphone ----------
+function toPcm16(f32) {
+  // ponytail: box-filter downsample, drops fractional samples at 44.1k chunk edges; use AudioWorklet+proper resampler if quality matters
+  const ratio = ctx.sampleRate / STT_RATE, n = Math.floor(f32.length / ratio), out = new Int16Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0, a = Math.floor(i * ratio), b = Math.floor((i + 1) * ratio);
+    for (let j = a; j < b; j++) s += f32[j];
+    out[i] = Math.max(-1, Math.min(1, s / (b - a))) * 0x7fff;
+  }
+  return out.buffer;
+}
+function onAudio(f32) {
+  let sum = 0; for (let i = 0; i < f32.length; i++) sum += f32[i] * f32[i];
+  const rms = Math.sqrt(sum / f32.length), loud = rms > +$("sens").value;
+  $("lvl").style.width = Math.min(100, rms / 0.08 * 100) + "%";
+  if (state !== "idle" && state !== "listening") { preroll = []; return; } // mute mic while Arya thinks/speaks
+  const pcm = toPcm16(f32);
+  if (mode === "ptt") { if (utt) utt.send(pcm); return; }
+  const now = performance.now();
+  if (!utt) {
+    preroll.push(pcm); if (preroll.length > 4) preroll.shift(); // ~350 ms so the first syllable isn't lost
+    if (loud) { utt = startUtterance(preroll); preroll = []; lastVoice = now; setState("listening"); }
+  } else {
+    utt.send(pcm);
+    if (loud) lastVoice = now;
+    else if (now - lastVoice > +$("silence").value) finishTurn();
+  }
+}
+async function startAudio() {
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  await ctx.resume();
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  const src = ctx.createMediaStreamSource(stream);
+  const proc = ctx.createScriptProcessor(4096, 1, 1); // ~85 ms chunks at 48 kHz
+  const mute = ctx.createGain(); mute.gain.value = 0;
+  proc.onaudioprocess = e => onAudio(e.inputBuffer.getChannelData(0));
+  src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+}
+
+// ---------- button ----------
+const talk = $("talk");
+talk.addEventListener("contextmenu", e => e.preventDefault());
+talk.addEventListener("pointerdown", async e => {
+  e.preventDefault();
+  if (state === "off") {
+    try { await startAudio(); await getToken(); setState("idle"); }
+    catch (err) { ctx = null; setState("off"); status(err.message || "Microphone permission denied.", true); }
+    return;
+  }
+  if (mode === "ptt" && state === "idle") { talk.setPointerCapture(e.pointerId); utt = startUtterance([]); setState("listening"); }
+});
+const release = () => { if (mode === "ptt" && state === "listening") finishTurn(); };
+talk.addEventListener("pointerup", release);
+talk.addEventListener("pointercancel", release);
+</script>
+</body>
+</html>
