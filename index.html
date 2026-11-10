@@ -120,7 +120,7 @@ For anything else, decline in one short sentence: "I can only help with the cons
 - To change something (lights, cameras, calls), call the tool straight away; it reads the console itself.
 - Before you **call** someone, **hang up**, **end all calls** or **reject** a call, say who and wait for a "yes".
 - If a tool answers done false, say what did not change. Never say it worked.
-- Never touch the mission itself (speed, pause, a jump in time): you cannot, and you must not.
+- Start, restart, hold or resume the simulated mission only when the crew asks, with the simulator tool. Never change its speed or jump in time.
 </script>
 
 <script>
@@ -458,6 +458,8 @@ const TOOLS = [
   { name: "set_camera", description: "Switch the camera preview view.", input_schema: { type: "object", properties: { view: { type: "string", enum: CAMERAS } }, required: ["view"] } },
   { name: "video_call", description: "Call a contact or hang up. Only call after the crew said yes.",
     input_schema: { type: "object", properties: { action: { type: "string", enum: ["call", "hang_up"] }, contact: { type: "string", enum: CONTACTS } }, required: ["action"] } },
+  { name: "simulator", description: "Control the simulated mission on the crew's request: start (or restart) from T minus 50 seconds, hold the clock, or resume it.",
+    input_schema: { type: "object", properties: { action: { type: "string", enum: ["start", "restart", "hold", "resume"] } }, required: ["action"] } },
   { name: "acknowledge_alert", description: "Acknowledge a caution or warning by id, or all.", input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
 ];
 function runTool(name, a) {
@@ -487,6 +489,12 @@ function runTool(name, a) {
       if (a.dim_percent != null) L.dim = Math.min(100, Math.max(0, Math.round(a.dim_percent / 5) * 5));
       return { done: true, lights: snapshot("lights") };
     }
+    case "simulator":
+      if (a.action === "start" && (sim.running || sim.t > T_START)) return { done: false, reason: "mission is already running at " + clock(sim.t) + "; use restart to begin again" };
+      if (a.action === "start" || a.action === "restart") { simRestart(true); log("Sim", "Mission started by voice at T minus 50 seconds."); return { done: true, mission_clock: "T minus 50 s", note: "You will now read the mission brief aloud by yourself; reply with two or three words only." }; }
+      if (a.action === "hold") { if (!sim.running) return { done: false, reason: "mission is already on hold" }; sim.running = false; return { done: true, held_at: clock(sim.t) }; }
+      if (sim.running) return { done: false, reason: "mission is already running" };
+      sim.running = true; sim.last = Date.now(); return { done: true, resumed_at: clock(sim.t) };
     case "set_camera": if (!CAMERAS.includes(a.view)) return { done: false, reason: "unknown view" }; sim.camera = a.view; return { done: true, view: a.view };
     case "video_call":
       if (a.action === "hang_up") { const was = sim.call; sim.call = null; return was ? { done: true, ended: was } : { done: false, reason: "no active call" }; }
@@ -547,6 +555,9 @@ Active alerts right now: ${open || "none"}. When the crew says "it" or "that ale
 You do speak on your own: this console announces every new caution, warning and mission event aloud in your voice the moment it happens, without the crew asking. Never say that you can only speak when spoken to. If the crew asks you to tell them about alerts, say that you already call them out as they come.
 You recently said aloud, on your own: ${sim.said.map(t => '"' + t + '"').join(" ") || "nothing"}. If the crew answers one of these (for example "confirmed" or "yes, done"), acknowledge it in a few words.
 Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to you, even without your name." : "always listening — follow the When to speak rules strictly."}
+
+## Mission control in this demo
+You can start, restart, hold and resume the simulated mission with the simulator tool. Do it straight away when the crew asks ("start the mission", "hold", "resume", "restart the mission"); this overrides any rule that says you cannot touch the mission. Ask for a "yes" only before a restart while a mission is running.
 
 ## Procedures
 - When the crew asks what to do about a caution or warning, call get_sop. Say only the next step, in one or two sentences, then wait until the crew says it is done before you give the following step. The first time, say once that it is a demo procedure.
@@ -742,7 +753,7 @@ $("test").onclick = async () => {
   const ac = turn = new AbortController();
   try {
     try { ctx ||= new (window.AudioContext || window.webkitAudioContext)(); await ctx.resume(); } catch {}
-    log("Test", "Page version 10. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
+    log("Test", "Page version 11. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
     const micOk = await step("Microphone access", async () => { await startAudio(); return "allowed"; });
     setState("thinking", "Running test… (tap the button to cancel)"); // keeps the mic from starting a turn during the test
     if (micOk) await step("Microphone sound", async () => {
@@ -779,7 +790,7 @@ talk.addEventListener("pointerdown", async e => {
   if (state === "off") {
     if (starting) return;
     starting = true; status("Starting…");
-    try { await startAudio(); await getToken(); setState("idle"); if (!sim.running && sim.t <= T_START) startMission(); } // mission starts with the mic
+    try { await startAudio(); await getToken(); setState("idle"); if (!sim.running && sim.t <= T_START) say("Arya online. Say, start the mission, when you are ready.", true); }
     catch (err) { setState("off"); status(err.message || String(err), true); log("Error", err.message || String(err)); }
     starting = false;
     return;
