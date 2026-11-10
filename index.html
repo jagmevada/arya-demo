@@ -164,7 +164,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 69; // bump on every push; shown at the bottom of the page
+const VERSION = 70; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -804,6 +804,7 @@ function describeAction(run, res) {
   if (run.tool === "acknowledge_alert") return "acknowledged: " + (res.acknowledged || []).join(", ") + ".";
   return run.tool.replace(/_/g, " ") + " is done.";
 }
+const LIGHT_KEYS = ["all_on", "all_off", "spots_on", "spots_off", "zones_on", "zones_off", "dim_percent"];
 const TIMED_TOOLS = ["set_cabin_lights", "set_camera", "console_command", "acknowledge_alert"]; // what Arya may do later on a timer; calls and mission control stay out
 function injectFault(id) { // fire a fault now, by button or by voice; a fixed fault can be fired again
   if (!ANOM[id]) return { done: false, reason: "unknown fault", faults: Object.keys(ANOM) };
@@ -873,6 +874,8 @@ function runTool(name, a) {
     case "set_cabin_lights": {
       const set = (arr, ids, v) => (ids || []).forEach(i => { if (i >= 1 && i <= arr.length) arr[i - 1] = v; });
       const yes = v => v === true || v === "true"; // a model may send true or false as text; the text "false" must not count as yes
+      // an input with none of the known fields used to change nothing and still report done, so a timed action was announced without happening
+      if (!LIGHT_KEYS.some(k => a[k] != null)) return { done: false, reason: "no light setting given; use one of: " + LIGHT_KEYS.join(", ") };
       if (yes(a.all_off)) { L.spots.fill(false); L.zones.fill(false); }
       if (yes(a.all_on)) { L.spots.fill(true); L.zones.fill(true); }
       set(L.spots, a.spots_on, true); set(L.spots, a.spots_off, false); set(L.zones, a.zones_on, true); set(L.zones, a.zones_off, false);
@@ -889,6 +892,11 @@ function runTool(name, a) {
     case "set_reminder": {
       for (const k of ["in_seconds", "seconds_before", "repeat_every_seconds"]) if (a[k] != null) a[k] = Number(a[k]) || 0; // a model may send "30" as text; adding text to the clock would corrupt the time
       if (a.action && !TIMED_TOOLS.includes(a.action.tool)) return { done: false, reason: "that action cannot be put on a timer", allowed: TIMED_TOOLS };
+      if (a.action) { // check the action now, while the model can still correct it, not when the timer fires
+        if (typeof a.action.input === "string") try { a.action.input = JSON.parse(a.action.input); } catch { a.action.input = {}; }
+        const inp = a.action.input || {};
+        if (a.action.tool === "set_cabin_lights" && !LIGHT_KEYS.some(k => inp[k] != null)) return { done: false, reason: "action.input has no light setting; use one of: " + LIGHT_KEYS.join(", ") };
+      }
       const run = a.action && !a.repeat_every_seconds ? a.action : null, doneText = a.message || ""; // empty = describe the real result when it fires
       const ev = a.event && MILESTONES.find(m => m[1] === a.event), left = x => { x = Math.round(x); const m = Math.floor(x / 60), sec = x % 60; return x < 120 ? x + " seconds" : m + " minutes" + (sec ? " " + sec + " seconds" : ""); };
       let list = [];
@@ -904,6 +912,8 @@ function runTool(name, a) {
       } else if (a.in_seconds > 0) list.push({ at: sim.t + a.in_seconds, run, text: run ? doneText : a.message || "Reminder." });
       else return { done: false, reason: "give an event, or in_seconds" };
       sim.reminders.push(...list);
+      // shown in the log so a copied log tells whether a real action or only a sentence was put on the timer
+      log("Sim", "Timer set for " + clock(list[0].at) + ": " + (run ? run.tool + " " + JSON.stringify(run.input || {}) : "speech only" + (list.length > 1 ? ", " + list.length + " callouts" : "")));
       return { done: true, reminders_set: list.length, first_in: fmtDur(list[0].at - sim.t), note: run ? "The action will run by itself at that time and you will then say the message; confirm in a few words." : "You will speak them by yourself; confirm in a few words." };
     }
     case "simulator": {
@@ -1023,7 +1033,7 @@ The Console Telemetry tools are a live mission simulator on this page: HLVM3 lau
 Mission clock now: ${clock(sim.t)}${sim.running ? "" : sim.started ? " (on hold)" : " (mission not started yet)"}. Phase: ${phaseAt(sim.t)}.
 Active alerts right now: ${open || "none"}. When the crew says "it" or "that alert", they mean the latest of these.
 You do speak on your own: this console announces every new caution, warning and mission event aloud in your voice the moment it happens, without the crew asking. Never say that you can only speak when spoken to. If the crew asks you to tell them about alerts, say that you already call them out as they come.
-You can also remind and count down: when the crew asks "remind me when…", "tell me 10 seconds before…", "count down every 10 seconds", call set_reminder straight away. Never say you cannot set a reminder or count down. You can also act on a timer: for "after 30 seconds switch off all lights" or "at orbit insertion switch to the window camera", call set_reminder with action (lights, camera, a console command, or acknowledging an alert); never offer a reminder instead of doing it. Reminders pending now: ${sim.reminders.length}.
+You can also remind and count down: when the crew asks "remind me when…", "tell me 10 seconds before…", "count down every 10 seconds", call set_reminder straight away. Never say you cannot set a reminder or count down. You can also act on a timer: for "after 30 seconds switch off all lights" or "at orbit insertion switch to the window camera", call set_reminder with action (lights, camera, a console command, or acknowledging an alert); never offer a reminder instead of doing it. A timer without action only speaks; it changes nothing, so never use one for something the crew wants done. Timers still pending: ${sim.reminders.length ? sim.reminders.slice(0, 6).map(r => (r.run ? r.run.tool : "speech") + " in " + fmtDur(r.at - sim.t)).join("; ") : "none"}; a timer that is not in this list has already fired or was never set.
 You recently said aloud, on your own: ${sim.said.map(t => '"' + t + '"').join(" ") || "nothing"}. If the crew answers one of these (for example "confirmed" or "yes, done"), acknowledge it in a few words.
 Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to you, even without your name." : "always listening — follow the When to speak rules strictly."}
 
