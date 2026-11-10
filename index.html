@@ -876,7 +876,7 @@ function spoken(text) { // apply the pronunciation list; the log keeps the writt
   // Open models often ignore "no markdown, no symbols": clean the text so the voice does not read them out
   text = text.replace(/[*_#`]+/g, "").replace(/[‑–—]/g, "-").replace(/\s?°\s?C\b/g, " degrees").replace(/\s?%/g, " percent")
     .replace(/\bkm\/s\b/g, "kilometres per second").replace(/\bm\/s\b/g, "metres per second").replace(/(\d)\s?km\b/g, "$1 kilometres")
-    .replace(/\bCO[₂2]\b/g, "C O 2").replace(/\bO[₂2]\b/g, "oxygen").replace(/T\s?-\s?minus/gi, "T minus");
+    .replace(/\bCO[₂2](?![A-Za-z0-9])/g, "C O 2").replace(/\bO[₂2](?![A-Za-z0-9])/g, "oxygen").replace(/T\s?-\s?minus/gi, "T minus");
   for (const line of $("lex").value.split("\n")) {
     const [w, say] = line.split("=").map(x => x.trim());
     if (w && say) try { text = text.replace(new RegExp("\\b" + w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "g"), say); } catch {}
