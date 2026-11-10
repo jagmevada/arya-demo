@@ -137,7 +137,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 33; // bump on every push; shown at the bottom of the page
+const VERSION = 34; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -312,7 +312,7 @@ const PROFILE = [[T_START, 0, 0, 1], [0, 0, 0, 1], [60, 12, 0.5, 1.8], [135, 45,
 // [mission s, event name, what Arya says aloud]
 const MILESTONES = [
   [T_START, "mission brief", "Arya online. Mission brief. HLVM3 will lift off from Sriharikota and place the crew module in a 400 kilometre orbit, 16 minutes after liftoff. After one orbit we deorbit, re-enter and splash down in the Arabian Sea, 1 hour 49 minutes after liftoff. All console systems are nominal. Crew, please confirm visors closed."],
-  [-6, "final count", "Five. Four. Three. Two. One. Liftoff! HLVM3 has cleared the tower."], // starts 1 s early to cover speech start-up delay
+  [-5.5, "final count", "Five. Four. Three. Two. One. Liftoff! HLVM3 has cleared the tower."], // picked up half a second early; playCount puts each word on its second
   [0, "liftoff", null], // spoken as part of the final count so the timing holds
   [60, "ascent callout", () => "One minute. " + callout()],
   [135, "S200 separation", () => "S200 boosters separated. " + callout()],
@@ -452,7 +452,8 @@ function simTick() {
   sim.last = now; // countdown runs in real time; the 2 s cap stops a stalled tab from making the clock jump;
   if (!sim.running) return;
   sim.t = Math.min(sim.t + dtm, T_END);
-  for (const [t, name, text] of MILESTONES) if (sim.t >= t && !sim.fired.has(name)) { sim.fired.add(name); if (text) say(typeof text === "function" ? text() : text, !/callout|status/.test(name)); } // mission events are always spoken; only extra callouts may be skipped
+  for (const [t, name, text] of MILESTONES) if (sim.t >= t && !sim.fired.has(name)) { sim.fired.add(name); if (text) say(typeof text === "function" ? text() : text, !/callout|status/.test(name)); if (name === "final count") sim.announce[sim.announce.length - 1].play = playCount; }
+  if (ctx && sim.t < -6 && $("cKey").value) prepCount(); // mission events are always spoken; only extra callouts may be skipped
   const link = contactNow(); // signal gained or lost is an event too
   if (!link !== !sim.link && sim.t > 0 && sim.t < T_SPLASH && !active("COMM1_LOSS")) say(link ? "Acquisition of signal, " + link + "." : "Loss of signal.", false);
   sim.link = link;
@@ -637,9 +638,9 @@ setInterval(() => {
   simTick(); renderHud();
   while (sim.announce.length && !sim.announce[0].keep && Date.now() - sim.announce[0].at > 25000) log("Arya", sim.announce.shift().text + " (skipped, Arya was busy)");
   if (sim.announce.length && state === "idle" && ctx && !turn) { // Arya calls out events and alerts, like HUD wait_for_event
-    const text = sim.announce.shift().text, ac = turn = new AbortController();
+    const item = sim.announce.shift(), text = item.text, ac = turn = new AbortController();
     log("Arya", text); setState("speaking", "Tap the button to stop Arya.");
-    speak(text, ac.signal).catch(e => { if (!ac.signal.aborted) log("Error", e.message); })
+    (item.play ? item.play(ac.signal) : speak(text, ac.signal)).catch(e => { if (!ac.signal.aborted) log("Error", e.message); })
       .finally(() => { if (turn === ac) { turn = null; setState("idle"); } });
   }
 }, 250);
@@ -754,14 +755,12 @@ function spoken(text) { // apply the pronunciation list; the log keeps the writt
   return text;
 }
 function stopAudio() { for (const s of playing) { try { s.stop(); } catch {} } playing = []; }
-async function speak(text, signal) { // resolves with ms until first audio
-  const t0 = performance.now();
-  if (ctx.state !== "running") await ctx.resume().catch(() => {});
+async function ttsFetch(text, signal) { // one Sonic request, with retries
   const ask = async () => fetchT("https://api.cartesia.ai/tts/bytes", {
     method: "POST",
     headers: { "Authorization": "Bearer " + await getToken(), "Cartesia-Version": CARTESIA_VERSION, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model_id: TTS_MODEL, transcript: spoken(text), language: /[ऀ-ॿ]/.test(text) ? "hi" : "en", // Devanagari → Hindi voice
+      model_id: TTS_MODEL, transcript: spoken(text), language: /[\u0900-\u097F]/.test(text) ? "hi" : "en", // Devanagari → Hindi voice
       voice: { mode: "id", id: $("voice").value.trim() || DEFAULT_VOICE },
       output_format: { container: "raw", encoding: "pcm_s16le", sample_rate: TTS_RATE },
     }),
@@ -773,12 +772,21 @@ async function speak(text, signal) { // resolves with ms until first audio
     await sleep(400 * (attempt + 1));
   }
   if (!r.ok) throw new Error("Sonic: " + r.status + " " + (await r.text()).slice(0, 200));
+  return r;
+}
+function pcmBuffer(bytes) { // raw 16-bit PCM → AudioBuffer
+  const n = bytes.length >> 1, buf = ctx.createBuffer(1, Math.max(n, 1), TTS_RATE), ch = buf.getChannelData(0), dv = new DataView(bytes.buffer, bytes.byteOffset, n * 2);
+  for (let i = 0; i < n; i++) ch[i] = dv.getInt16(i * 2, true) / 32768;
+  return buf;
+}
+async function speak(text, signal) { // resolves with ms until first audio
+  const t0 = performance.now();
+  if (ctx.state !== "running") await ctx.resume().catch(() => {});
+  const r = await ttsFetch(text, signal);
   let at = 0, first = null, last = null, pend = new Uint8Array(0);
   const play = bytes => {
-    const n = bytes.length >> 1; if (!n) return;
-    const buf = ctx.createBuffer(1, n, TTS_RATE), ch = buf.getChannelData(0), dv = new DataView(bytes.buffer, bytes.byteOffset, n * 2);
-    for (let i = 0; i < n; i++) ch[i] = dv.getInt16(i * 2, true) / 32768;
-    const src = ctx.createBufferSource(); src.buffer = buf; src.connect(ctx.destination);
+    if (bytes.length < 2) return;
+    const buf = pcmBuffer(bytes), src = ctx.createBufferSource(); src.buffer = buf; src.connect(ctx.destination);
     if (first === null) first = performance.now() - t0;
     at = Math.max(at, ctx.currentTime + 0.06); // ponytail: 60 ms lead; a slow network gives a short gap, not a crash
     src.start(at); at += buf.duration; playing.push(src); last = src;
@@ -795,6 +803,31 @@ async function speak(text, signal) { // resolves with ms until first audio
   feed(new Uint8Array(0), true);
   if (last && !signal?.aborted) await new Promise(res => { last.onended = res; signal?.addEventListener("abort", res); });
   return first;
+}
+
+// ---------- final count: each number on its own second ----------
+// The six clips are fetched during the brief and then placed on the audio clock, so network delay cannot shift them.
+const COUNT = ["Five.", "Four.", "Three.", "Two.", "One.", "Liftoff! HLVM3 has cleared the tower."];
+let countClips = null, countVoice = "";
+function prepCount() {
+  const v = $("voice").value;
+  if (countClips && countVoice === v) return;
+  countVoice = v;
+  const p = countClips = (async () => { const out = []; for (const w of COUNT) out.push(pcmBuffer(new Uint8Array(await (await ttsFetch(w)).arrayBuffer()))); return out; })()
+    .catch(() => { if (countClips === p) countClips = null; return null; }); // one at a time, to stay inside the plan's limit on parallel requests
+}
+async function playCount(signal) {
+  const clips = await Promise.race([countClips, sleep(250).then(() => null)]);
+  if (!clips) return speak(COUNT.join(" "), signal); // clips not ready: say it in one go, as before
+  if (ctx.state !== "running") await ctx.resume().catch(() => {});
+  const base = ctx.currentTime, t = sim.t; let last = null;
+  clips.forEach((buf, i) => {
+    const delay = (i - 5) - t; // "Five" belongs at T-5 … "Liftoff" at T0; the countdown runs in real time
+    if (delay < 0.02 && i < 5) return; // that second has already passed
+    const src = ctx.createBufferSource(); src.buffer = buf; src.connect(ctx.destination);
+    src.start(base + Math.max(0.02, delay)); playing.push(src); last = src;
+  });
+  await new Promise(res => { last.onended = res; signal?.addEventListener("abort", res); });
 }
 
 // ---------- turn handling ----------
