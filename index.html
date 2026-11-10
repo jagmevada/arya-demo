@@ -131,7 +131,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 17; // bump on every push; shown at the bottom of the page
+const VERSION = 18; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -332,7 +332,7 @@ const SOPS = { // demo procedures
 let sim;
 function simRestart(running) {
   sim = {
-    t: T_START, last: Date.now(), running, speed: +$("simSpeed").value || 4,
+    t: T_START, last: Date.now(), envLast: 0, acc: 0, running, speed: +$("simSpeed").value || 4,
     env: { temp: 22.1, press: 101.3, hum: 46, o2: 20.9, co2: 0.30 }, rate: { co2: 0, press: 0 },
     alerts: [], fired: new Set(), fixed: new Set(), announce: [], said: [],
     lights: { spots: [true, false], zones: [true, true, true, true, false, false], dim: 70 },
@@ -341,7 +341,7 @@ function simRestart(running) {
 }
 const fmtDur = s => { s = Math.max(0, Math.round(s)); if (s < 90) return s + " s"; const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
   return (d ? d + " d " : "") + (d || h ? h + " h " : "") + m + " min"; };
-const clock = t => { const s = Math.round(Math.abs(t)), p = n => String(n).padStart(2, "0"); return (t < 0 ? "T-" : "T+") + (s >= 3600 ? p(Math.floor(s / 3600)) + ":" : "") + p(Math.floor(s % 3600 / 60)) + ":" + p(s % 60); };
+const clock = t => { const s = t < 0 ? Math.ceil(-t) : Math.floor(t), p = n => String(n).padStart(2, "0"); return (t < 0 ? "T-" : "T+") + (s >= 3600 ? p(Math.floor(s / 3600)) + ":" : "") + p(Math.floor(s % 3600 / 60)) + ":" + p(s % 60); };
 function profileAt(t) {
   t = Math.min(Math.max(t, T_START), T_SPLASH);
   let i = 1; while (i < PROFILE.length - 1 && PROFILE[i][0] < t) i++;
@@ -407,7 +407,8 @@ function say(text, keep) { sim.announce.push({ text, at: Date.now(), keep }); si
 function simTick() {
   // The clock waits while a mission event is still queued to be spoken, so Arya's words and the clock stay together.
   const waiting = ctx && sim.announce.some(a => a.keep);
-  const now = Date.now(), dtm = sim.running && !waiting ? Math.min((now - sim.last) / 1000, 2) * (sim.t < 0 ? 1 : sim.speed) : 0; // countdown runs in real time; a stalled tab can't make the clock jump sim.last = now;
+  const now = Date.now(), dtm = sim.running && !waiting ? Math.min((now - sim.last) / 1000, 2) * (sim.t < 0 ? 1 : sim.speed) : 0;
+  sim.last = now; // countdown runs in real time; the 2 s cap stops a stalled tab from making the clock jump;
   if (!sim.running) return;
   sim.t = Math.min(sim.t + dtm, T_END);
   for (const [t, name, text] of MILESTONES) if (sim.t >= t && !sim.fired.has(name)) { sim.fired.add(name); if (text) say(typeof text === "function" ? text() : text, !/callout|status/.test(name)); } // mission events are always spoken; only extra callouts may be skipped
@@ -418,14 +419,17 @@ function simTick() {
     sim.fired.add(id); sim.alerts.push({ id, text: a.text, level: a.level, acknowledged: false });
     say((a.level === "warning" ? "Warning. " : "Caution. ") + a.text + ".", true);
   }
+  sim.acc += dtm;
+  if (now - sim.envLast < 1000) return; // cabin values move once a second; the clock itself ticks 4 times a second
+  const dtE = sim.acc; sim.acc = 0; sim.envLast = now;
   const e = sim.env, p0 = e.press, c0 = e.co2;
   e.temp = walk(e.temp, active("FAN2_LOW") ? 24.5 : 22, 0.02, 0.06, 18, 30);
   e.hum = walk(e.hum, 46, 0.02, 0.3, 30, 70); e.o2 = walk(e.o2, 20.9, 0.03, 0.04, 19.5, 23);
   e.co2 = walk(e.co2, active("CO2_HIGH") ? 0.95 : 0.30, 0.012, 0.006, 0.1, 1.5);
-  e.press = active("CABIN_PRESS_LOW") ? Math.max(60, e.press - 0.006 * dtm) : walk(e.press, 101.3, 0.01, 0.04, 60, 103);
-  if (dtm > 0) { // trend per mission minute, smoothed
-    sim.rate.co2 = 0.95 * sim.rate.co2 + 0.05 * (e.co2 - c0) / dtm * 60;
-    sim.rate.press = 0.95 * sim.rate.press + 0.05 * (e.press - p0) / dtm * 60;
+  e.press = active("CABIN_PRESS_LOW") ? Math.max(60, e.press - 0.006 * dtE) : walk(e.press, 101.3, 0.01, 0.04, 60, 103);
+  if (dtE > 0) { // trend per mission minute, smoothed
+    sim.rate.co2 = 0.95 * sim.rate.co2 + 0.05 * (e.co2 - c0) / dtE * 60;
+    sim.rate.press = 0.95 * sim.rate.press + 0.05 * (e.press - p0) / dtE * 60;
   }
   if (sim.call && !contactNow()) { sim.call = null; say("Call dropped: loss of signal.", true); }
 }
@@ -544,7 +548,7 @@ setInterval(() => {
     speak(text, ac.signal).catch(e => { if (!ac.signal.aborted) log("Error", e.message); })
       .finally(() => { if (turn === ac) { turn = null; setState("idle"); } });
   }
-}, 1000);
+}, 250);
 const startMission = () => { simRestart(true); history = []; renderHud(); log("Sim", "Mission started at T minus 50 seconds. Countdown is real time, then " + sim.speed + "× speed: liftoff to splashdown takes about " + Math.round(T_SPLASH / sim.speed / 60) + " minutes."); };
 $("simStart").onclick = startMission;
 $("simPause").onclick = () => { sim.running = !sim.running; sim.last = Date.now(); renderHud(); };
