@@ -149,7 +149,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 41; // bump on every push; shown at the bottom of the page
+const VERSION = 42; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -189,8 +189,9 @@ $("oLoad").onclick = async () => {
       m.gb = m.b ? Math.round(m.b * 0.6 + 2) : null; // ponytail: rough 4-bit estimate, 0.6 GB per billion parameters plus 2 GB; check the real file size before buying hardware
       m.short = (m.name || m.id).replace(/^[^:]*:\s*/, "").replace(/^.*\//, "");
     }
-    const rank = m => (OPEN_FAMILIES.test(m.id) ? 0 : 2) + (m.b ? 0 : 1); // open models with a known size first
-    list.sort((a, b) => rank(a) - rank(b) || (a.b || 0) - (b.b || 0) || a.id.localeCompare(b.id));
+    // Order: open models that fit the 40 GB budget, biggest (most capable) first; then too-big ones; then unknown size
+    const rank = m => (OPEN_FAMILIES.test(m.id) ? 0 : 3) + (!m.b ? 2 : m.gb > 40 ? 1 : 0);
+    list.sort((a, b) => rank(a) - rank(b) || (b.b || 0) - (a.b || 0) || a.id.localeCompare(b.id));
     openList = list; drawModels(withTools.length > 0);
   } catch (e) { $("oHint").textContent = "Could not load the list: " + e.message; }
 };
@@ -202,7 +203,7 @@ function drawModels(tools) {
     const pick = $("oPick"); pick.innerHTML = ""; pick.append(new Option("Choose a model (" + list.length + ")…", ""));
     for (const m of list) pick.append(new Option(m.short + (m.b ? "  ·  " + m.b + "B  ·  ~" + m.gb + " GB" + (m.gb > 40 ? "  ✗ over 40" : "  ✓") : "  ·  size not in name"), m.id));
     pick.hidden = false;
-    $("oHint").textContent = list.length + ($("oFree").checked ? " free" : "") + " models" + (tools ? " with tool calling" : "") + ", smallest first. B = billion parameters. GB = my rough estimate of memory for a 4-bit copy (0.6 GB per billion + 2 GB), not a published figure. ✓ fits your 40 GB brain budget.";
+    $("oHint").textContent = list.length + ($("oFree").checked ? " free" : "") + " models" + (tools ? " with tool calling" : "") + ". Those that fit 40 GB come first, biggest first; models under about 12B are too weak for Arya. B = billion parameters. GB = my rough estimate of memory for a 4-bit copy (0.6 GB per billion + 2 GB), not a published figure. ✓ fits your 40 GB brain budget.";
   }
 }
 $("oFree").checked = store.get("oFree", "") === "1";
@@ -872,6 +873,10 @@ async function think(userText, signal) {
 const TTS_RATE = 24000;
 function spoken(text) { // apply the pronunciation list; the log keeps the written form
   text = text.replace(/(\d)\s?[gG]\b(?!-)/g, "$1 gee"); // "2.3 g" is g-load, not grams
+  // Open models often ignore "no markdown, no symbols": clean the text so the voice does not read them out
+  text = text.replace(/[*_#`]+/g, "").replace(/[‑–—]/g, "-").replace(/\s?°\s?C\b/g, " degrees").replace(/\s?%/g, " percent")
+    .replace(/\bkm\/s\b/g, "kilometres per second").replace(/\bm\/s\b/g, "metres per second").replace(/(\d)\s?km\b/g, "$1 kilometres")
+    .replace(/\bCO[₂2]\b/g, "C O 2").replace(/\bO[₂2]\b/g, "oxygen").replace(/T\s?-\s?minus/gi, "T minus");
   for (const line of $("lex").value.split("\n")) {
     const [w, say] = line.split("=").map(x => x.trim());
     if (w && say) try { text = text.replace(new RegExp("\\b" + w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "g"), say); } catch {}
