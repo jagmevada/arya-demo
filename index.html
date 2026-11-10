@@ -400,7 +400,9 @@ function region(lat, lon) { // ponytail: crude boxes, good enough for a demo
 const walk = (v, target, k, noise, lo, hi) => Math.min(hi, Math.max(lo, v + (target - v) * k + (Math.random() - 0.5) * noise));
 function say(text, keep) { sim.announce.push({ text, at: Date.now(), keep }); sim.said.push(text); if (sim.said.length > 4) sim.said.shift(); }
 function simTick() {
-  const now = Date.now(), dtm = sim.running ? Math.min((now - sim.last) / 1000, 2) * (sim.t < 0 ? 1 : sim.speed) : 0; // countdown runs in real time; a stalled tab can't make the clock jump sim.last = now;
+  // The clock waits while a mission event is still queued to be spoken, so Arya's words and the clock stay together.
+  const waiting = ctx && sim.announce.some(a => a.keep);
+  const now = Date.now(), dtm = sim.running && !waiting ? Math.min((now - sim.last) / 1000, 2) * (sim.t < 0 ? 1 : sim.speed) : 0; // countdown runs in real time; a stalled tab can't make the clock jump sim.last = now;
   if (!sim.running) return;
   sim.t = Math.min(sim.t + dtm, T_END);
   for (const [t, name, text] of MILESTONES) if (sim.t >= t && !sim.fired.has(name)) { sim.fired.add(name); if (text) say(typeof text === "function" ? text() : text, !/callout|status/.test(name)); } // mission events are always spoken; only extra callouts may be skipped
@@ -753,7 +755,7 @@ $("test").onclick = async () => {
   const ac = turn = new AbortController();
   try {
     try { ctx ||= new (window.AudioContext || window.webkitAudioContext)(); await ctx.resume(); } catch {}
-    log("Test", "Page version 12. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
+    log("Test", "Page version 13. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
     const micOk = await step("Microphone access", async () => { await startAudio(); return "allowed"; });
     setState("thinking", "Running test… (tap the button to cancel)"); // keeps the mic from starting a turn during the test
     if (micOk) await step("Microphone sound", async () => {
