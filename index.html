@@ -267,7 +267,7 @@ function startUtterance(initial) {
 // ponytail: illustrative profile, not flight data. Every time, altitude, speed and procedure here is a demo value;
 // replace PROFILE / MILESTONES / ANOM / SOPS with real figures when available.
 const D2R = Math.PI / 180, R_E = 6371, INC = 51.6, PERIOD = 5556, EARTH_DAY = 86164;
-const T_START = -120, T_INSERT = 960, T_DEORBIT = 3900, T_BURN_END = 4080, T_SMSEP = 4500, T_ENTRY = 5640, T_DROGUE = 6240, T_MAIN = 6330, T_SPLASH = 6540, T_END = T_SPLASH + 300;
+const T_START = -50, T_INSERT = 960, T_DEORBIT = 3900, T_BURN_END = 4080, T_SMSEP = 4500, T_ENTRY = 5640, T_DROGUE = 6240, T_MAIN = 6330, T_SPLASH = 6540, T_END = T_SPLASH + 300;
 const SHAR = [13.72, 80.23];
 const STATIONS = [
   ["Sriharikota", 13.72, 80.23], ["ISTRAC Bengaluru", 13.03, 77.51], ["Port Blair", 11.62, 92.73],
@@ -282,8 +282,9 @@ const PROFILE = [[T_START, 0, 0, 1], [0, 0, 0, 1], [60, 12, 0.5, 1.8], [135, 45,
   [T_ENTRY, 120, 7.8, 0.1], [5900, 55, 5.5, 3.8], [6100, 25, 1.2, 2.0], [T_DROGUE, 7, 0.15, 1.3], [T_MAIN, 3, 0.06, 1.1], [T_SPLASH - 1, 0.01, 0.007, 1], [T_SPLASH, 0, 0, 1]];
 // [mission s, event name, what Arya says aloud]
 const MILESTONES = [
-  [T_START, "countdown start", "Arya online. Countdown is at T minus 2 minutes. Crew, please confirm suits sealed and visors closed."],
-  [0, "liftoff", "Liftoff. HLVM3 has cleared the tower."],
+  [T_START, "mission brief", "Arya online. Mission brief. HLVM3 will lift off from Sriharikota and place the crew module in a 400 kilometre orbit, 16 minutes after liftoff. After one orbit we deorbit, re-enter and splash down in the Arabian Sea, 1 hour 49 minutes after liftoff. All console systems are nominal. Crew, please confirm visors closed."],
+  [-6, "final count", "Five. Four. Three. Two. One. Liftoff! HLVM3 has cleared the tower."], // starts 1 s early to cover speech start-up delay
+  [0, "liftoff", null], // spoken as part of the final count so the timing holds
   [60, "ascent callout", () => "One minute. " + callout()],
   [135, "S200 separation", () => "S200 boosters separated. " + callout()],
   [200, "crew escape system jettison", "Crew escape system jettisoned."],
@@ -384,7 +385,7 @@ function nextContacts(n = 3) {
   }
   return out;
 }
-const nextEvents = (n = 3) => MILESTONES.filter(m => m[0] > sim.t && !/callout|status/.test(m[1])).sort((a, b) => a[0] - b[0]).slice(0, n).map(m => ({ event: m[1], in: fmtDur(m[0] - sim.t) }));
+const nextEvents = (n = 3) => MILESTONES.filter(m => m[0] > sim.t && !/callout|status|final count/.test(m[1])).sort((a, b) => a[0] - b[0]).slice(0, n).map(m => ({ event: m[1], in: fmtDur(m[0] - sim.t) }));
 function region(lat, lon) { // ponytail: crude boxes, good enough for a demo
   if (lat > 5 && lat < 24 && lon > 50 && lon < 72) return "Arabian Sea";
   if (lat > 5 && lat < 18 && lon > 82 && lon < 94) return "Bay of Bengal";
@@ -399,10 +400,10 @@ function region(lat, lon) { // ponytail: crude boxes, good enough for a demo
 const walk = (v, target, k, noise, lo, hi) => Math.min(hi, Math.max(lo, v + (target - v) * k + (Math.random() - 0.5) * noise));
 function say(text, keep) { sim.announce.push({ text, at: Date.now(), keep }); sim.said.push(text); if (sim.said.length > 4) sim.said.shift(); }
 function simTick() {
-  const now = Date.now(), dtm = sim.running ? (now - sim.last) / 1000 * sim.speed : 0; sim.last = now;
+  const now = Date.now(), dtm = sim.running ? (now - sim.last) / 1000 * (sim.t < 0 ? 1 : sim.speed) : 0; // countdown runs in real time sim.last = now;
   if (!sim.running) return;
   sim.t = Math.min(sim.t + dtm, T_END);
-  for (const [t, name, text] of MILESTONES) if (sim.t >= t && !sim.fired.has(name)) { sim.fired.add(name); say(typeof text === "function" ? text() : text, false); }
+  for (const [t, name, text] of MILESTONES) if (sim.t >= t && !sim.fired.has(name)) { sim.fired.add(name); if (text) say(typeof text === "function" ? text() : text, name === "final count"); }
   const link = contactNow(); // signal gained or lost is an event too
   if (!link !== !sim.link && sim.t > 0 && sim.t < T_SPLASH && !active("COMM1_LOSS")) say(link ? "Acquisition of signal, " + link + "." : "Loss of signal.", false);
   sim.link = link;
@@ -529,7 +530,7 @@ setInterval(() => {
       .finally(() => { if (turn === ac) { turn = null; setState("idle"); } });
   }
 }, 1000);
-const startMission = () => { simRestart(true); history = []; renderHud(); log("Sim", "Mission started at T minus 2 minutes, " + sim.speed + "× speed. Launch to splashdown takes about " + Math.round((T_SPLASH - T_START) / sim.speed / 60) + " minutes."); };
+const startMission = () => { simRestart(true); history = []; renderHud(); log("Sim", "Mission started at T minus 50 seconds. Countdown is real time, then " + sim.speed + "× speed: liftoff to splashdown takes about " + Math.round(T_SPLASH / sim.speed / 60) + " minutes."); };
 $("simStart").onclick = startMission;
 $("simPause").onclick = () => { sim.running = !sim.running; sim.last = Date.now(); renderHud(); };
 $("simSpeed").onchange = () => { sim.speed = +$("simSpeed").value; };
@@ -540,7 +541,7 @@ function demoContext() {
   return `
 
 ## Demo mission simulator
-The Console Telemetry tools are a live mission simulator on this page: HLVM3 launch countdown, ascent, one orbit, re-entry and splashdown. Every value is simulated and changes in real time, so always call a tool for fresh values. The simulator runs ${sim.speed} times faster than real time; give times exactly as the tools return them.
+The Console Telemetry tools are a live mission simulator on this page: HLVM3 launch countdown, ascent, one orbit, re-entry and splashdown. Every value is simulated and changes in real time, so always call a tool for fresh values. The countdown runs in real time; after liftoff the simulator runs ${sim.speed} times faster than real time; give times exactly as the tools return them.
 Mission clock now: ${clock(sim.t)}${sim.running ? "" : " (on hold, mission not started)"}. Phase: ${phaseAt(sim.t)}.
 Active alerts right now: ${open || "none"}. When the crew says "it" or "that alert", they mean the latest of these.
 You do speak on your own: this console announces every new caution, warning and mission event aloud in your voice the moment it happens, without the crew asking. Never say that you can only speak when spoken to. If the crew asks you to tell them about alerts, say that you already call them out as they come.
@@ -741,7 +742,7 @@ $("test").onclick = async () => {
   const ac = turn = new AbortController();
   try {
     try { ctx ||= new (window.AudioContext || window.webkitAudioContext)(); await ctx.resume(); } catch {}
-    log("Test", "Page version 9. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
+    log("Test", "Page version 10. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
     const micOk = await step("Microphone access", async () => { await startAudio(); return "allowed"; });
     setState("thinking", "Running test… (tap the button to cancel)"); // keeps the mic from starting a turn during the test
     if (micOk) await step("Microphone sound", async () => {
