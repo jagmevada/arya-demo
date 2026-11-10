@@ -40,7 +40,7 @@
 </head>
 <body>
 <main>
-  <header><h1><span>ARYA</span> voice demo</h1><button id="clear">Clear</button></header>
+  <header><h1><span>ARYA</span> voice demo</h1><div><button id="test">Test</button> <button id="clear">Clear</button></div></header>
 
   <div class="seg" id="mode">
     <button data-mode="ptt">Push to talk</button>
@@ -332,6 +332,26 @@ async function startAudio() {
   proc.onaudioprocess = e => onAudio(e.inputBuffer.getChannelData(0));
   src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
 }
+
+// ---------- diagnostics (no devtools on iPad) ----------
+window.addEventListener("error", e => log("Error", e.message));
+window.addEventListener("unhandledrejection", e => log("Error", String(e.reason?.message || e.reason)));
+$("test").onclick = async () => {
+  const step = async (name, fn) => {
+    try { const r = await fn(); log("Test", "✅ " + name + (r ? ": " + r : "")); return true; }
+    catch (e) { log("Test", "❌ " + name + ": " + (e.message || e)); return false; }
+  };
+  try { ctx ||= new (window.AudioContext || window.webkitAudioContext)(); await ctx.resume(); } catch {}
+  log("Test", "Page version 3. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
+  const okC = await step("Cartesia key → access token", async () => { token = null; await getToken(); });
+  let reply = "Arya online.";
+  await step("Claude (" + $("model").value + ")", async () => {
+    const saved = history; history = [];
+    try { reply = await think("Push-to-talk test. Reply with exactly: Arya online."); } finally { history = saved; }
+    return reply;
+  });
+  if (okC) await step("Sonic voice", async () => { await speak(reply); return "you should have heard it"; });
+};
 
 // ---------- button ----------
 const talk = $("talk");
