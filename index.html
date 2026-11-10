@@ -135,7 +135,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 28; // bump on every push; shown at the bottom of the page
+const VERSION = 29; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -236,6 +236,7 @@ setInterval(() => {
 
 // ---------- Ink STT: one WebSocket per utterance ----------
 let keytermsOk = true; // [UNVERIFIED] query format for Ink keyterms; switched off automatically if Cartesia rejects it
+let claudeCalls = 0;
 let uStat = { n: 0, peak: 0 }; // what the mic delivered during the current utterance, for a useful message when nothing was heard
 function startUtterance(initial) {
   uStat = { n: initial.length, peak: 0 };
@@ -570,7 +571,7 @@ function runTool(name, a) {
 function renderHud() {
   const s = snapshot(), m = s.mission, c = s.cabin, nc = nextContacts(1)[0], e = sim.env;
   const row = (k, v, cls = "") => `<div><span>${k}</span><b class="${cls}">${v}</b></div>`;
-  const open = sim.alerts.filter(a => active(a.id)), warn = open.some(a => a.level === "warning");
+  const open = sim.alerts.filter(a => active(a.id)), fresh = open.filter(a => !a.acknowledged), acked = open.filter(a => a.acknowledged), warn = fresh.some(a => a.level === "warning");
   $("hud").innerHTML =
     row("Clock", clock(sim.t) + (sim.running ? "" : " HOLD")) + row("Sim speed", sim.t < 0 ? "countdown 1×, then " + sim.speed + "×" : sim.speed + "×") + row("Phase", m.phase) + row("Next", m.next_event) +
     row("Altitude", m.altitude) + row("Velocity", m.velocity) + row("G load", m.g_load.replace(", weightless", "")) +
@@ -581,7 +582,8 @@ function renderHud() {
     row("CO₂", c.carbon_dioxide, e.co2 > 0.5 ? "warn" : "") + row("Humidity", c.humidity) +
     row("Lights", "S" + s.lights.spots_on.join(",") + " Z" + s.lights.zones_on.join(",") + " " + s.lights.dim_percent + "%") +
     row("Camera", sim.camera) + row("Call", sim.call || "none") +
-    row("Alerts", open.length ? open.map(a => a.text + (a.acknowledged ? " (ack)" : "")).join("; ") : "none", open.length ? (warn ? "bad" : "warn") : "ok");
+    row("Alerts", fresh.length ? fresh.map(a => a.text).join("; ") : "none", fresh.length ? (warn ? "bad" : "warn") : "ok") +
+    (acked.length ? row("Acknowledged, not fixed", acked.map(a => a.text).join("; ")) : "");
   $("simStart").textContent = sim.running || sim.t > T_START ? "↺ Restart" : "▶ Start mission";
   $("simPause").textContent = sim.running ? "❚❚ Hold" : "▶ Resume"; $("simPause").hidden = sim.t <= T_START && !sim.running;
 }
@@ -628,6 +630,10 @@ function demoContext() {
   const open = sim.alerts.filter(a => active(a.id)).map(a => a.id + " (" + a.level + ": " + a.text + (a.acknowledged ? ", acknowledged" : ", not acknowledged") + ")").join(", ");
   return `
 
+## Live data rule (most important)
+Each crew message starts with a [mission clock] stamp. Telemetry changes every second, so numbers in older turns are old readings, not errors. FORBIDDEN in every language: "correction", "I was wrong", "earlier I said", "पिछली बार", "गलत बताया", "ये सही हैं", or any other remark about an earlier answer. State only what is true now. Do not repeat the stamp.
+Length: at most two short sentences, about 25 words, unless the crew asks for more.
+
 ## Demo mission simulator
 The Console Telemetry tools are a live mission simulator on this page: HLVM3 launch countdown, ascent, one orbit, re-entry and splashdown. Every value is simulated and changes in real time, so always call a tool for fresh values. The countdown runs in real time; after liftoff the simulator runs ${sim.speed} times faster than real time; give times exactly as the tools return them.
 Mission clock now: ${clock(sim.t)}${sim.running ? "" : " (on hold, mission not started)"}. Phase: ${phaseAt(sim.t)}.
@@ -665,10 +671,11 @@ async function think(userText, signal) {
   const turns = history.flatMap((m, i) => m.role === "user" && typeof m.content === "string" ? [i] : []);
   if (turns.length > 6) history = history.slice(turns[turns.length - 6]); // ponytail: keep last 6 turns, cut only at turn starts
   const start = history.length;
-  history.push({ role: "user", content: userText });
+  history.push({ role: "user", content: "[mission clock " + clock(sim.t) + "] " + userText }); // the stamp shows Claude that time has moved since older turns
+  claudeCalls = 0;
   try {
     for (let i = 0; i < 6; i++) {
-      const j = await claude(history, signal);
+      const j = await claude(history, signal); claudeCalls++;
       history.push({ role: "assistant", content: j.content });
       const uses = j.content.filter(c => c.type === "tool_use");
       if (!uses.length) return j.content.filter(c => c.type === "text").map(c => c.text).join("").trim() || "...";
@@ -768,7 +775,7 @@ async function finishTurn() {
     if (reply.replace(/[.\s…]/g, "")) { setState("speaking", "Tap the button to stop Arya."); first = await speak(reply, ac.signal); }
     if (turn !== ac) return;
     turn = null;
-    setState("idle", "Ink " + secs(t1 - t0) + " · Claude " + secs(t2 - t1) + (first === null ? "" : " · Sonic " + secs(first)));
+    setState("idle", "Ink " + secs(t1 - t0) + " · Claude " + secs(t2 - t1) + (claudeCalls > 1 ? " (" + claudeCalls + " calls)" : "") + (first === null ? "" : " · Sonic " + secs(first)));
   } catch (e) {
     if (turn !== ac) return; // cancelled by the crew: the new state is already set
     turn = null; stopAudio(); setState("idle"); status(e.message, true);
