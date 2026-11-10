@@ -26,6 +26,10 @@
   .meter { height:6px; background:var(--panel); border-radius:3px; overflow:hidden; position:relative; }
   .meter i { position:absolute; inset:0 auto 0 0; width:0; background:var(--ok); }
   .meter b { position:absolute; top:0; bottom:0; width:2px; background:var(--acc); }
+  .hudbar { display:flex; justify-content:space-between; align-items:center; color:var(--dim); font-size:13px; }
+  #hud { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:6px; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:10px; font-variant-numeric:tabular-nums; }
+  #hud div { display:flex; flex-direction:column; } #hud span { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; }
+  #hud b { font-weight:600; font-size:14px; } #hud b.ok { color:var(--ok); } #hud b.warn { color:var(--acc); }
   #log { flex:1; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; overflow-y:auto; min-height:200px; }
   .msg { margin:0 0 10px; } .msg .who { font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; }
   .msg.arya .who { color:var(--acc); } .msg .t { white-space:pre-wrap; }
@@ -51,6 +55,8 @@
   <div id="status">Open Settings, enter both API keys, then tap the button.</div>
   <div class="meter" title="Mic level / voice threshold"><i id="lvl"></i><b id="thr"></b></div>
 
+  <div class="hudbar"><span>Live console (simulated)</span><button id="simRestart">Restart sim</button></div>
+  <div id="hud"></div>
   <div id="log"></div>
 
   <details id="settings">
@@ -223,42 +229,199 @@ function startUtterance(initial) {
   };
 }
 
-// ---------- Claude brain ----------
-const t0 = Date.now() - (2 * 86400 + 5 * 3600 + 14 * 60) * 1000; // demo launch: MET starts at 2d 5h 14m
+// ---------- live console simulator (stands in for the HUD connector) ----------
+// ponytail: simple circular-orbit + random-walk model; every value is simulated
+// LON0/PH0 tuned so ISTRAC Bengaluru AOS is ~5 min after restart
+const LON0 = 320, PH0 = 3840; const D2R = Math.PI / 180, R_E = 6371, ALT0 = 400, INC = 51.6, PERIOD = 92.6 * 60, EARTH_DAY = 86164;
+const STATIONS = [
+  ["ISTRAC Bengaluru", 13.03, 77.51], ["Sriharikota", 13.72, 80.23], ["Port Blair", 11.62, 92.73],
+  ["Lucknow", 26.85, 80.95], ["Mauritius", -20.3, 57.5],
+];
+const CONTACTS = ["Flight Director ISTRAC", "Mission Control Sriharikota", "HOD"];
+const CAMERAS = ["cabin wide", "crew close-up", "window", "docking port"];
+const SCRIPT = [ // [seconds after restart, id, text, effect]
+  [120, "CO2_HIGH", "Caution: cabin carbon dioxide high", "co2"],
+  [420, "FAN2_LOW", "Caution: cabin fan 2 speed low", null],
+];
+let sim;
+function simRestart() {
+  sim = {
+    t0: Date.now(), met0: 4 * 3600 + 8 * 60, // MET starts at 4 h 8 min, revolution 3
+    env: { temp: 22.1, press: 101.3, hum: 46, o2: 20.9, co2: 0.30 },
+    alerts: [], fired: new Set(), announce: [],
+    lights: { spots: [true, false], zones: [true, true, true, true, false, false], dim: 70 },
+    camera: "cabin wide", call: null,
+  };
+}
+simRestart();
+const metS = () => sim.met0 + (Date.now() - sim.t0) / 1000;
+const fmtDur = s => { s = Math.max(0, Math.round(s)); const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return (d ? d + " d " : "") + (d || h ? h + " h " : "") + m + " min"; };
+function orbitAt(met) {
+  const u = 2 * Math.PI * (met + PH0) / PERIOD, i = INC * D2R;
+  const lat = Math.asin(Math.sin(i) * Math.sin(u)) / D2R;
+  let lon = Math.atan2(Math.cos(i) * Math.sin(u), Math.cos(u)) / D2R + LON0 - 360 * met / EARTH_DAY;
+  lon = ((lon + 540) % 360) - 180;
+  return { lat, lon, alt: ALT0 + 3 * Math.sin(u), rev: Math.floor(met / PERIOD) + 1 };
+}
+function gcKm(a, b, c, d) { const s = Math.sin((c - a) * D2R / 2) ** 2 + Math.cos(a * D2R) * Math.cos(c * D2R) * Math.sin((d - b) * D2R / 2) ** 2; return 2 * R_E * Math.asin(Math.sqrt(s)); }
+const inView = (o, st) => gcKm(o.lat, o.lon, st[1], st[2]) < 2000; // ponytail: fixed ~5° elevation footprint at 400 km
+function contactNow(met = metS()) { const o = orbitAt(met); return STATIONS.find(st => inView(o, st)) || null; }
+function nextPasses(n = 3) {
+  const now = metS(), out = [];
+  for (const st of STATIONS) {
+    let was = inView(orbitAt(now), st), aos = null;
+    for (let t = now + 10; t < now + 12 * 3600; t += 10) {
+      const v = inView(orbitAt(t), st);
+      if (v && !was) aos = t;
+      if (!v && was && aos) { out.push({ station: st[0], in: fmtDur(aos - now), duration: fmtDur(t - aos), _t: aos }); break; }
+      was = v;
+    }
+  }
+  return out.sort((a, b) => a._t - b._t).slice(0, n).map(({ _t, ...p }) => p);
+}
+function region(lat, lon) { // ponytail: crude boxes, good enough for a demo
+  if (lat > 8 && lat < 36 && lon > 68 && lon < 97) return "India";
+  if (lat < -55) return "Southern Ocean";
+  if (lon > 20 && lon < 120 && lat < 25) return "Indian Ocean";
+  if (lon >= 120 || lon < -80) return lat > 50 ? "North Pacific" : "Pacific Ocean";
+  if (lon >= -80 && lon < -35) return lat > 15 ? "North America" : lat > -55 ? "South America" : "Southern Ocean";
+  if (lon >= -35 && lon < 15 && (lat < 35 || lon < -10)) return lat > 0 && lon > -18 ? "Africa" : "Atlantic Ocean";
+  return lat > 35 ? "Europe and Asia" : "Africa and Arabia";
+}
+const walk = (v, target, k, noise, lo, hi) => Math.min(hi, Math.max(lo, v + (target - v) * k + (Math.random() - 0.5) * noise));
+function simTick() {
+  const e = sim.env, el = (Date.now() - sim.t0) / 1000;
+  for (const [at, id, text, eff] of SCRIPT) if (el >= at && !sim.fired.has(id)) {
+    sim.fired.add(id); sim.alerts.push({ id, text, level: "caution", acknowledged: false, effect: eff }); sim.announce.push(text);
+  }
+  const co2Alert = sim.alerts.find(a => a.effect === "co2" && !a.acknowledged);
+  e.temp = walk(e.temp, 22, 0.02, 0.06, 18, 27); e.press = walk(e.press, 101.3, 0.02, 0.04, 99, 103);
+  e.hum = walk(e.hum, 46, 0.02, 0.3, 30, 70); e.o2 = walk(e.o2, 20.9, 0.03, 0.04, 19.5, 23);
+  e.co2 = walk(e.co2, co2Alert ? 0.58 : 0.30, 0.03, 0.008, 0.1, 1);
+  if (sim.call && !contactNow()) { sim.call = null; sim.announce.push("Call dropped: loss of signal."); }
+}
+function snapshot(section) {
+  const met = metS(), o = orbitAt(met), st = contactNow(met), e = sim.env, L = sim.lights;
+  const all = {
+    mission: { phase: "on-orbit coast", mission_elapsed_time: fmtDur(met), revolution: o.rev,
+      altitude: Math.round(o.alt) + " km", velocity: "7.67 km/s", inclination: INC + " deg",
+      latitude: Math.abs(o.lat).toFixed(1) + (o.lat >= 0 ? " N" : " S"), longitude: Math.abs(o.lon).toFixed(1) + (o.lon >= 0 ? " E" : " W"),
+      over: region(o.lat, o.lon), ground_contact: st ? "in contact with " + st[0] : "no ground contact" },
+    cabin: { simulated: true, temperature: e.temp.toFixed(1) + " C", pressure: e.press.toFixed(1) + " kPa",
+      humidity: Math.round(e.hum) + " %", oxygen: e.o2.toFixed(1) + " %", carbon_dioxide: e.co2.toFixed(2) + " %" },
+    alerts: sim.alerts.length ? sim.alerts.map(({ effect, ...a }) => a) : "no cautions or warnings",
+    lights: { spots_on: L.spots.flatMap((v, i) => v ? [i + 1] : []), zones_on: L.zones.flatMap((v, i) => v ? [i + 1] : []), dim_percent: L.dim },
+    camera: { view: sim.camera, available: CAMERAS },
+    calls: { active: sim.call || "none", contacts: CONTACTS, calls_possible: st ? "yes" : "no, needs ground contact" },
+    computer: { status: "normal", cpu: Math.round(30 + 10 * Math.random()) + " %", display: "nominal" },
+  };
+  return section && all[section] ? all[section] : all;
+}
+const TOOLS = [
+  { name: "console_status", description: "Live console readings. section: mission (phase, MET, orbit, position, ground contact), cabin, alerts, lights, camera, calls, computer, or all.",
+    input_schema: { type: "object", properties: { section: { type: "string", enum: ["mission", "cabin", "alerts", "lights", "camera", "calls", "computer", "all"] } }, required: ["section"] } },
+  { name: "mission_timeline", description: "Upcoming ground-station passes (AOS) with time until and duration.",
+    input_schema: { type: "object", properties: {} } },
+  { name: "set_cabin_lights", description: "Change cabin lights. Spots 1-2, zones 1-6. dim_percent snaps to steps of 5.",
+    input_schema: { type: "object", properties: { spots_on: { type: "array", items: { type: "integer" } }, spots_off: { type: "array", items: { type: "integer" } },
+      zones_on: { type: "array", items: { type: "integer" } }, zones_off: { type: "array", items: { type: "integer" } }, all_off: { type: "boolean" }, all_on: { type: "boolean" }, dim_percent: { type: "integer" } } } },
+  { name: "set_camera", description: "Switch the camera preview view.", input_schema: { type: "object", properties: { view: { type: "string", enum: CAMERAS } }, required: ["view"] } },
+  { name: "video_call", description: "Call a contact or hang up. Only call after the crew said yes.",
+    input_schema: { type: "object", properties: { action: { type: "string", enum: ["call", "hang_up"] }, contact: { type: "string", enum: CONTACTS } }, required: ["action"] } },
+  { name: "acknowledge_alert", description: "Acknowledge a caution or warning by id, or all.", input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+];
+function runTool(name, a) {
+  const L = sim.lights;
+  switch (name) {
+    case "console_status": return snapshot(a.section);
+    case "mission_timeline": return { next_passes: nextPasses() };
+    case "set_cabin_lights": {
+      const set = (arr, ids, v) => (ids || []).forEach(i => { if (i >= 1 && i <= arr.length) arr[i - 1] = v; });
+      if (a.all_off) { L.spots.fill(false); L.zones.fill(false); }
+      if (a.all_on) { L.spots.fill(true); L.zones.fill(true); }
+      set(L.spots, a.spots_on, true); set(L.spots, a.spots_off, false); set(L.zones, a.zones_on, true); set(L.zones, a.zones_off, false);
+      if (a.dim_percent != null) L.dim = Math.min(100, Math.max(0, Math.round(a.dim_percent / 5) * 5));
+      return { done: true, lights: snapshot("lights") };
+    }
+    case "set_camera": if (!CAMERAS.includes(a.view)) return { done: false, reason: "unknown view" }; sim.camera = a.view; return { done: true, view: a.view };
+    case "video_call":
+      if (a.action === "hang_up") { const was = sim.call; sim.call = null; return was ? { done: true, ended: was } : { done: false, reason: "no active call" }; }
+      if (!contactNow()) return { done: false, reason: "no ground contact", next_pass: nextPasses(1)[0] };
+      if (!CONTACTS.includes(a.contact)) return { done: false, reason: "unknown contact", contacts: CONTACTS };
+      sim.call = a.contact; return { done: true, connected: a.contact };
+    case "acknowledge_alert": {
+      const hit = sim.alerts.filter(x => !x.acknowledged && (a.id === "all" || x.id === a.id || x.text.toLowerCase().includes(String(a.id).toLowerCase())));
+      hit.forEach(x => x.acknowledged = true);
+      return hit.length ? { done: true, acknowledged: hit.map(x => x.text) } : { done: false, reason: "no matching unacknowledged alert", alerts: snapshot("alerts") };
+    }
+  }
+  return { done: false, reason: "unknown tool" };
+}
+function renderHud() {
+  const s = snapshot(), m = s.mission, c = s.cabin, nx = nextPasses(1)[0];
+  const row = (k, v, cls = "") => `<div><span>${k}</span><b class="${cls}">${v}</b></div>`;
+  const alerts = sim.alerts.filter(a => !a.acknowledged);
+  $("hud").innerHTML =
+    row("MET", m.mission_elapsed_time) + row("Rev", m.revolution) + row("Alt", m.altitude) +
+    row("Position", m.latitude + " " + m.longitude) + row("Over", m.over) +
+    row("Contact", m.ground_contact.replace("in contact with ", ""), m.ground_contact.startsWith("in") ? "ok" : "") +
+    row("Next AOS", nx ? nx.station + " in " + nx.in : "—") +
+    row("Temp", c.temperature) + row("Press", c.pressure) + row("O₂", c.oxygen) +
+    row("CO₂", c.carbon_dioxide, sim.env.co2 > 0.5 ? "warn" : "") + row("Humidity", c.humidity) +
+    row("Lights", "S" + s.lights.spots_on.join(",") + " Z" + s.lights.zones_on.join(",") + " " + s.lights.dim_percent + "%") +
+    row("Camera", sim.camera) + row("Call", sim.call || "none") +
+    row("Alerts", alerts.length ? alerts.map(a => a.text.replace("Caution: ", "")).join("; ") : "none", alerts.length ? "warn" : "ok");
+}
+setInterval(() => {
+  simTick(); renderHud();
+  if (sim.announce.length && state === "idle" && ctx) { // Arya calls out new alerts, like HUD wait_for_event
+    const text = sim.announce.shift(); log("Arya", text); setState("speaking");
+    speak(text).catch(e => log("Error", e.message)).finally(() => setState("idle"));
+  }
+}, 1000);
+$("simRestart").onclick = () => { simRestart(); renderHud(); log("Sim", "Simulator restarted: MET 4 h 8 min, alerts at +2 and +7 minutes."); };
+
+// ---------- Claude brain (with console tools) ----------
 function demoContext() {
-  const met = Math.floor((Date.now() - t0) / 60000);
-  const nextPass = 92 - (met % 92);
   return `
 
-## Demo mode (no console tools are connected)
-There are no Console Telemetry tools in this demo. Use only this simulated snapshot, and never invent other values:
-- Mission phase: on-orbit operations. Mission elapsed time: ${Math.floor(met / 1440)} days ${Math.floor(met % 1440 / 60)} hours ${met % 60} minutes.
-- Orbit: altitude 400 kilometres, inclination 51.6 degrees, period 92 minutes.
-- Next ground-station pass: ISTRAC Bengaluru in ${nextPass} minutes.
-- Cabin (simulated): temperature 22 degrees, pressure 101.3 kilopascals, oxygen 21 percent, carbon dioxide 0.3 percent, humidity 45 percent. No cautions or warnings.
-- Console computer: normal. Cabin lights: on, 70 percent. Camera view: cabin wide. Video calls: none active.
-If asked to change lights, cameras or calls, say the console is not connected in this demo, so nothing changed.
+## Demo console
+The Console Telemetry tools are a live simulator on this page: every value is simulated, and changes in real time. Always call a tool for fresh values.
 Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to you, even without your name." : "always listening — follow the When to speak rules strictly."}`;
 }
-async function think(userText) {
-  const key = $("aKey").value.trim();
-  if (!key) throw new Error("Enter your Anthropic API key in Settings.");
-  history.push({ role: "user", content: userText });
-  history = history.slice(-12); // ponytail: short rolling memory, enough for a demo
-  if (history[0].role !== "user") history.shift();
+async function claude(messages) {
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
-      "x-api-key": key, "anthropic-version": "2023-06-01",
+      "x-api-key": $("aKey").value.trim(), "anthropic-version": "2023-06-01",
       "anthropic-dangerous-direct-browser-access": "true", "content-type": "application/json",
     },
-    body: JSON.stringify({ model: $("model").value, max_tokens: 300, system: $("prompt").value + demoContext(), messages: history }),
+    body: JSON.stringify({ model: $("model").value, max_tokens: 400, system: $("prompt").value + demoContext(), tools: TOOLS, messages }),
   });
-  if (!r.ok) { history.pop(); throw new Error("Claude: " + r.status + " " + (await r.text()).slice(0, 200)); }
-  const j = await r.json();
-  const reply = j.content.filter(c => c.type === "text").map(c => c.text).join("").trim() || "...";
-  history.push({ role: "assistant", content: reply });
-  return reply;
+  if (!r.ok) throw new Error("Claude: " + r.status + " " + (await r.text()).slice(0, 200));
+  return r.json();
+}
+async function think(userText) {
+  if (!$("aKey").value.trim()) throw new Error("Enter your Anthropic API key in Settings.");
+  const turns = history.flatMap((m, i) => m.role === "user" && typeof m.content === "string" ? [i] : []);
+  if (turns.length > 6) history = history.slice(turns[turns.length - 6]); // ponytail: keep last 6 turns, cut only at turn starts
+  history.push({ role: "user", content: userText });
+  try {
+    for (let i = 0; i < 6; i++) {
+      const j = await claude(history);
+      history.push({ role: "assistant", content: j.content });
+      const uses = j.content.filter(c => c.type === "tool_use");
+      if (j.stop_reason !== "tool_use" || !uses.length)
+        return j.content.filter(c => c.type === "text").map(c => c.text).join("").trim() || "...";
+      status("Arya is checking the console…");
+      history.push({ role: "user", content: uses.map(u => {
+        const res = runTool(u.name, u.input || {}); renderHud();
+        return { type: "tool_result", tool_use_id: u.id, content: JSON.stringify(res) };
+      }) });
+    }
+    throw new Error("Too many tool calls in one turn.");
+  } catch (e) { history = []; throw e; }
 }
 
 // ---------- Sonic TTS ----------
@@ -357,7 +520,7 @@ $("test").onclick = async () => {
     catch (e) { log("Test", "❌ " + name + ": " + (e.message || e)); return false; }
   };
   try { ctx ||= new (window.AudioContext || window.webkitAudioContext)(); await ctx.resume(); } catch {}
-  log("Test", "Page version 5. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
+  log("Test", "Page version 6. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
   const micOk = await step("Microphone access", async () => { await startAudio(); return "allowed"; });
   if (micOk) await step("Microphone sound", async () => {
     log("Test", "🎤 Say something now (3 seconds)…");
