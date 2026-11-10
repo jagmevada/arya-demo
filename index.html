@@ -76,7 +76,16 @@
       <select id="brain"><option value="claude">Claude (Anthropic API)</option><option value="open">Open model (OpenAI-compatible API)</option></select></label>
     <label>Anthropic API key<input id="aKey" type="password" autocomplete="off" placeholder="sk-ant-..."></label>
     <div id="openCfg">
-      <label>Open model: API base URL<input id="oUrl" autocomplete="off" placeholder="https://openrouter.ai/api/v1"></label>
+      <label>Open model: provider
+        <select id="oProv">
+          <option value="https://openrouter.ai/api/v1">OpenRouter (many open models)</option>
+          <option value="https://api.cerebras.ai/v1">Cerebras</option>
+          <option value="https://api.groq.com/openai/v1">Groq</option>
+          <option value="http://localhost:11434/v1">Local: Ollama on this machine</option>
+          <option value="http://localhost:8000/v1">Local: vLLM or llama.cpp on this machine</option>
+          <option value="">Other address…</option>
+        </select></label>
+      <label id="oUrlRow">Open model: API base URL<input id="oUrl" autocomplete="off" placeholder="https://…/v1"></label>
       <label>Open model: API key (leave empty for a local server)<input id="oKey" type="password" autocomplete="off"></label>
       <label>Open model: model name, exactly as the provider lists it<input id="oModel" autocomplete="off" placeholder="copy it from the provider's model list"></label>
       <div class="row"><button id="oLoad">Load model list</button><label style="margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap"><input id="oFree" type="checkbox" style="width:auto;margin:0">Free only</label><button id="oBench" hidden>Test listed models</button></div>
@@ -149,7 +158,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 43; // bump on every push; shown at the bottom of the page
+const VERSION = 44; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -249,7 +258,24 @@ $("oBench").onclick = async () => {
 };
 $("oFree").checked = store.get("oFree", "") === "1";
 $("oFree").onchange = () => { store.set("oFree", $("oFree").checked ? "1" : ""); if (openList.length) drawModels(openList.some(m => m.supported_parameters)); };
-$("oPick").onchange = () => { if ($("oPick").value) { $("oModel").value = $("oPick").value; store.set("oModel", $("oPick").value); } };
+$("oPick").onchange = () => { if ($("oPick").value) { $("oModel").value = $("oPick").value; store.set("oModel", $("oPick").value); saveModelForProv(); } };
+// Provider menu: fills the address, and keeps a separate saved key for each provider
+const provKnown = () => [...$("oProv").options].some(o => o.value && o.value === $("oUrl").value.trim());
+const syncProv = () => { $("oProv").value = provKnown() ? $("oUrl").value.trim() : ""; $("oUrlRow").hidden = $("oProv").value !== ""; };
+$("oProv").onchange = () => {
+  if ($("oProv").value) { $("oUrl").value = $("oProv").value; store.set("oUrl", $("oUrl").value); }
+  $("oKey").value = store.get("oKey:" + $("oUrl").value.trim(), ""); store.set("oKey", $("oKey").value);
+  $("oModel").value = store.get("oModel:" + $("oUrl").value.trim(), ""); store.set("oModel", $("oModel").value);
+  $("oPick").hidden = $("oBench").hidden = true; openList = [];
+  $("oHint").textContent = "Provider changed. Paste its key if the key field is empty, then tap Load model list.";
+  $("oUrlRow").hidden = $("oProv").value !== "";
+};
+$("oKey").addEventListener("input", () => store.set("oKey:" + $("oUrl").value.trim(), $("oKey").value.trim()));
+const saveModelForProv = () => store.set("oModel:" + $("oUrl").value.trim(), $("oModel").value.trim());
+$("oModel").addEventListener("input", saveModelForProv);
+if ($("oKey").value && !store.get("oKey:" + $("oUrl").value.trim(), "")) store.set("oKey:" + $("oUrl").value.trim(), $("oKey").value.trim()); // keep the key entered before this menu existed
+if ($("oModel").value && !store.get("oModel:" + $("oUrl").value.trim(), "")) saveModelForProv(); // same for the model chosen before
+syncProv();
 const showBrain = () => { $("openCfg").hidden = $("brain").value !== "open"; };
 $("brain").addEventListener("change", showBrain); showBrain();
 if (!$("cKey").value || ($("brain").value === "open" ? !$("oModel").value : !$("aKey").value)) $("settings").open = true;
