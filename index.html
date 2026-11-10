@@ -164,7 +164,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 74; // bump on every push; shown at the bottom of the page
+const VERSION = 75; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -1044,11 +1044,13 @@ Length: at most two short sentences, about 25 words, unless the crew asks for mo
 The Console Telemetry tools are a live mission simulator on this page: HLVM3 launch countdown, ascent, one orbit, re-entry and splashdown. Every value is simulated and changes in real time, so always call a tool for fresh values. The countdown runs in real time; after liftoff the simulator runs ${sim.speed} times faster than real time; give times exactly as the tools return them.
 Mission clock now: ${clock(sim.t)}${sim.running ? "" : sim.started ? " (on hold)" : " (mission not started yet)"}. Phase: ${phaseAt(sim.t)}.
 Active alerts right now: ${open || "none"}. When the crew says "it" or "that alert", they mean the latest of these.
+procedure_now in the snapshot holds the full procedure of every active alert, in order. When the crew asks what to do, give step 1 first, then the next step each time they confirm one. Never skip a step, never change the order, and never work out a step from a command name; only the crew saying a step is done lets you move on. If the crew asks whether an earlier step was missed, check procedure_now and say plainly which step it is.
+When the crew asks "what happened?", "what was that?" or asks you to say it again just after you announced something on your own, they mean that announcement (the last item in the list below), not your last answer.
 You do speak on your own: this console announces every new caution, warning and mission event aloud in your voice the moment it happens, without the crew asking. Never say that you can only speak when spoken to. If the crew asks you to tell them about alerts, say that you already call them out as they come.
 When you call set_cabin_lights, set_camera or set_reminder, write in the same message, together with the call, the one short sentence the crew will hear, in the crew's language, saying exactly what is done or set ("All cabin lights are off.", "30 second में सारी lights बंद हो जाएंगी।"). The console speaks that sentence if the action works, so do not write "I will check" or a question there.
 You can also remind and count down: when the crew asks "remind me when…", "tell me 10 seconds before…", "count down every 10 seconds", call set_reminder straight away. Never say you cannot set a reminder or count down. You can also act on a timer: for "after 30 seconds switch off all lights" or "at orbit insertion switch to the window camera", call set_reminder with action (lights, camera, a console command, or acknowledging an alert); never offer a reminder instead of doing it. A timer without action only speaks; it changes nothing, so never use one for something the crew wants done. Timers still pending: ${sim.reminders.length ? sim.reminders.slice(0, 6).map(r => (r.run ? r.run.tool : r.report ? r.report + " callout" : "speech") + " in " + fmtDur(r.at - sim.t)).join("; ") : "none"}; a timer that is not in this list has already fired or was never set.
 You recently said aloud, on your own: ${sim.said.map(t => '"' + t + '"').join(" ") || "nothing"}. If the crew answers one of these (for example "confirmed" or "yes, done"), acknowledge it in a few words.
-Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to you, even without your name." : "always listening — follow the When to speak rules strictly."}
+Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to you, even without your name. Never reply with \"...\" in this mode: a short or unclear utterance (\"no, no\", \"mm\") gets a short question about what the crew wants; an objection gets a real answer." : "always listening — follow the When to speak rules strictly."}
 
 ${$("replyLang").value !== "auto" ? '## Reply language (overrides the Language rules above)\nAlways reply in English, in every reply, even when the crew speaks Hindi. You still understand Hindi fully and act on it.\n\n' : ""}## Sir in this reply
 ${sirNow ? 'You may say "sir" once in this reply if it sounds natural ("Yes, sir", "जी sir").' : 'Do NOT say "sir" (or "सर") anywhere in this reply.'}
@@ -1059,11 +1061,12 @@ Every time, place and value you say must come from this snapshot or a tool resul
 These values move every second, and the mission clock runs faster than real time. Any number, time or alert state in the earlier conversation was correct when it was said and is now simply old. A different value now is a change, not a mistake: never correct, retract or apologise for an earlier answer, and never mention that it differed. Just give the current value, with "now" if it helps. Do not say "simulated".
 ${JSON.stringify({ ...snapshot(), camera: sim.camera, remaining_timeline: nextEvents(99), splashdown_zone: region(posAt(T_SPLASH).lat, posAt(T_SPLASH).lon), next_contacts: nextContacts(),
     next_ground_station: nextContacts(20).find(c => !/relay|recovery/.test(c.via)) || "none before splashdown; contact is by relay satellite, then the recovery ship",
-    safety_now: Object.fromEntries(sim.alerts.filter(a => active(a.id)).map(a => [a.id, SOPS[a.id].safety()])) })}`;
+    safety_now: Object.fromEntries(sim.alerts.filter(a => active(a.id)).map(a => [a.id, SOPS[a.id].safety()])),
+    procedure_now: Object.fromEntries(sim.alerts.filter(a => active(a.id)).map(a => [a.id, SOPS[a.id].steps.map((x, i) => (i + 1) + ". " + x)])) })}`;
 }
 // ---------- English → Hindi, as a separate step ----------
 const HINDI_RULES = `You translate one short spoken reply of a spacecraft voice assistant from English into Hindi. Output only the Hindi sentence(s), nothing else.
-- Natural, polite, everyday spoken Hindi in Devanagari, correctly spelled with full word endings (करता है, होता है, रहे हैं). The speaker is a woman (कर सकती हूँ). Address the crew as आप, never तुम.
+- Natural, polite, everyday spoken Hindi in Devanagari, correctly spelled with full word endings (करता है, होता है, रहे हैं). The speaker is a woman (कर सकती हूँ). Address the crew as आप, never तुम; the crew member may be a man or a woman, so use the forms that fit both (क्या आप चाहेंगे, आप कर सकते हैं), never the feminine form for the crew (not आप चाहती हैं).
 - Keep these exactly as they are, in English letters: all numbers and units, names, abbreviations and technical terms (CO2, O2, kPa, MET, ISTRAC, S200, L110, C25, cabin, pressure, oxygen, lights, camera, zone, spot, valve, scrubber, fan, suit loop, visor, orbit, altitude, velocity, re-entry, parachute, splashdown, alert, caution, warning, reminder, step, console, mission, sir).
 - Same meaning, same length, no additions, no explanations, no quotation marks.`;
 async function translateHi(text, signal) {
@@ -1187,8 +1190,9 @@ async function think(userText, signal) {
       const t = performance.now(), j = await claude(history, signal); claudeCalls++; callMs.push(performance.now() - t);
       history.push({ role: "assistant", content: j.content });
       const uses = j.content.filter(c => c.type === "tool_use"), said = j.content.filter(c => c.type === "text").map(c => c.text).join("").trim();
-      if (!uses.length && !said && i === 0) { history.pop(); continue; } // an empty answer (seen on Gemma): ask once more
-      if (!uses.length) return said || "Copy.";
+      const mute = !said || (mode === "ptt" && /^[.…\s]*$/.test(said)); // in push-to-talk the crew pressed the button, so silence is not an answer
+      if (!uses.length && mute && i === 0) { history.pop(); continue; } // an empty answer (seen on Gemma): ask once more
+      if (!uses.length) return mute ? (mode === "ptt" ? "Say again, please." : "...") : said;
       // Every tool call gets its result, whatever the stop reason: a call left without one makes the API refuse the whole conversation.
       status("Arya is checking the console…");
       let quick = true;
