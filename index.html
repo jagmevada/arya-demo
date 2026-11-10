@@ -308,6 +308,7 @@ function toPcm16(f32) {
 function onAudio(f32) {
   let sum = 0; for (let i = 0; i < f32.length; i++) sum += f32[i] * f32[i];
   const rms = Math.sqrt(sum / f32.length), loud = rms > +$("sens").value;
+  peak = Math.max(peak, rms);
   $("lvl").style.width = Math.min(100, rms / 0.08 * 100) + "%";
   if (state !== "idle" && state !== "listening") { preroll = []; return; } // mute mic while Arya thinks/speaks
   const pcm = toPcm16(f32);
@@ -322,15 +323,25 @@ function onAudio(f32) {
     else if (now - lastVoice > +$("silence").value) finishTurn();
   }
 }
+let micOn = false, peak = 0;
 async function startAudio() {
-  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  if (micOn) return;
+  if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser gives no microphone API here. Open the page in Safari (not an in-app browser) over https.");
+  ctx ||= new (window.AudioContext || window.webkitAudioContext)();
   await ctx.resume();
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
+  catch (e) {
+    throw new Error(e.name === "NotAllowedError"
+      ? "Microphone blocked. In Safari tap aA → Website Settings → Microphone → Allow, then reload."
+      : "Microphone error " + e.name + ": " + e.message);
+  }
   const src = ctx.createMediaStreamSource(stream);
   const proc = ctx.createScriptProcessor(4096, 1, 1); // ~85 ms chunks at 48 kHz
   const mute = ctx.createGain(); mute.gain.value = 0;
   proc.onaudioprocess = e => onAudio(e.inputBuffer.getChannelData(0));
   src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+  micOn = true;
 }
 
 // ---------- diagnostics (no devtools on iPad) ----------
@@ -342,7 +353,16 @@ $("test").onclick = async () => {
     catch (e) { log("Test", "❌ " + name + ": " + (e.message || e)); return false; }
   };
   try { ctx ||= new (window.AudioContext || window.webkitAudioContext)(); await ctx.resume(); } catch {}
-  log("Test", "Page version 3. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
+  log("Test", "Page version 4. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
+  const micOk = await step("Microphone access", async () => { await startAudio(); return "allowed"; });
+  if (micOk) await step("Microphone sound", async () => {
+    log("Test", "🎤 Say something now (3 seconds)…");
+    peak = 0; await new Promise(r => setTimeout(r, 3000));
+    // ponytail: 0.003 RMS floor is a guess; tune if a working mic reads lower
+    if (peak < 0.003) throw new Error("access allowed but no sound (peak " + peak.toFixed(4) + "). Check mic isn't muted or used by another app.");
+    return "working, peak level " + peak.toFixed(3) + " (voice threshold " + $("sens").value + ")";
+  });
+  if (micOk && state === "off") setState("idle");
   const okC = await step("Cartesia key → access token", async () => { token = null; await getToken(); });
   let reply = "Arya online.";
   await step("Claude (" + $("model").value + ")", async () => {
@@ -360,7 +380,7 @@ talk.addEventListener("pointerdown", async e => {
   e.preventDefault();
   if (state === "off") {
     try { await startAudio(); await getToken(); setState("idle"); }
-    catch (err) { ctx = null; setState("off"); status(err.message || "Microphone permission denied.", true); }
+    catch (err) { setState("off"); status(err.message || String(err), true); log("Error", err.message || String(err)); }
     return;
   }
   if (mode === "ptt" && state === "idle") { talk.setPointerCapture(e.pointerId); utt = startUtterance([]); setState("listening"); }
