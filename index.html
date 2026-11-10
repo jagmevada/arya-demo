@@ -163,7 +163,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 59; // bump on every push; shown at the bottom of the page
+const VERSION = 60; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -905,7 +905,7 @@ async function translateHi(text, signal) {
     const r = await fetchT(base + "/chat/completions", { method: "POST",
       headers: { "Content-Type": "application/json", ...(key ? { "Authorization": "Bearer " + key } : {}) },
       body: JSON.stringify({ model: $("oModel").value.trim(), max_tokens: 600, temperature: 0,
-        ...(/openrouter\.ai/.test(base) ? { reasoning: { effort: "low" } } : {}),
+        ...thinkOff(base, $("oModel").value.trim()),
         messages: [{ role: "system", content: HINDI_RULES }, { role: "user", content: text }] }) }, 30000, signal);
     if (!r.ok) throw new Error("LLM: " + r.status + " " + (await r.text()).slice(0, 120));
     const j = await r.json(); addUsage(base, j.usage);
@@ -970,6 +970,10 @@ function usageText(base = $("oUrl").value.trim().replace(/\/+$/, "")) {
   return t.calls + " calls, " + (t.inTok / 1000).toFixed(0) + "k tokens in, " + (t.outTok / 1000).toFixed(1) + "k out" + (price ? ", about $" + cost.toFixed(2) + " at $" + price + " per million tokens" : "");
 }
 function showUsage() { $("oUse").textContent = "Used from this browser on this provider: " + usageText() + ". The provider's own console shows the true balance."; }
+// OpenRouter: reasoning effort "none" switches a model's silent thinking off (per its reasoning-tokens guide); a model that
+// requires thinking rejects it, and then "low" is used. Other servers do not get the field.
+const mustThink = {};
+const thinkOff = (base, model) => /openrouter\.ai/.test(base) ? { reasoning: { effort: mustThink[model] ? "low" : "none" } } : {};
 async function openModel(messages, signal, model = $("oModel").value.trim()) {
   const base = $("oUrl").value.trim().replace(/\/+$/, ""), key = $("oKey").value.trim();
   for (let attempt = 0; ; attempt++) {
@@ -979,7 +983,7 @@ async function openModel(messages, signal, model = $("oModel").value.trim()) {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(key ? { "Authorization": "Bearer " + key } : {}) }, // a local server needs no key
         body: JSON.stringify({ model, max_tokens: 2000, temperature: 0.15, messages: toOpenMessages(messages), // low temperature: at 0.4 this model dropped Hindi word endings ("करत", "होत") in longer answers // room for a thinking model: its silent reasoning counts against the limit, and a low limit left the answer empty
-          ...(/openrouter\.ai/.test(base) ? { reasoning: { effort: "low" } } : {}), // [UNVERIFIED] OpenRouter's switch for less silent reasoning, for speed; not sent to other servers
+          ...thinkOff(base, model), // no silent reasoning: it cost 9 to 13 s per answer on a thinking model
           tools: TOOLS.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.input_schema } })) }),
       }, 60000, signal);
     } catch (e) { if (signal?.aborted) throw e; throw new Error("LLM: could not reach " + base + " (" + e.message + "). Check the URL; a browser also needs the server to allow cross-origin requests."); }
@@ -995,6 +999,7 @@ async function openModel(messages, signal, model = $("oModel").value.trim()) {
       return { content, stop_reason: msg.tool_calls?.length ? "tool_use" : "end_turn" };
     }
     if (attempt === 0 && [429, 500, 502, 503].includes(r.status)) { await sleep(800); continue; }
+    if (r.status === 400 && !mustThink[model] && /openrouter\.ai/.test(base)) { mustThink[model] = true; continue; } // this model cannot switch reasoning off: ask for the lowest level instead
     const body = (await r.text()).slice(0, 200);
     throw new Error((r.status === 402 || /credit|quota|billing|payment/i.test(body) ? "LLM: the provider says the credit or quota is used up. " : "") + "LLM: " + r.status + " " + body);
   }
