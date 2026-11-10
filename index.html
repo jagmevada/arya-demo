@@ -131,7 +131,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 18; // bump on every push; shown at the bottom of the page
+const VERSION = 19; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -555,17 +555,7 @@ $("simPause").onclick = () => { sim.running = !sim.running; sim.last = Date.now(
 $("simSpeed").onchange = () => { sim.speed = +$("simSpeed").value; };
 
 // ---------- Claude brain (with console tools) ----------
-function demoContext() {
-  const open = sim.alerts.filter(a => active(a.id)).map(a => a.id + " (" + a.level + ": " + a.text + (a.acknowledged ? ", acknowledged" : ", not acknowledged") + ")").join(", ");
-  return `
-
-## Demo mission simulator
-The Console Telemetry tools are a live mission simulator on this page: HLVM3 launch countdown, ascent, one orbit, re-entry and splashdown. Every value is simulated and changes in real time, so always call a tool for fresh values. The countdown runs in real time; after liftoff the simulator runs ${sim.speed} times faster than real time; give times exactly as the tools return them.
-Mission clock now: ${clock(sim.t)}${sim.running ? "" : " (on hold, mission not started)"}. Phase: ${phaseAt(sim.t)}.
-Active alerts right now: ${open || "none"}. When the crew says "it" or "that alert", they mean the latest of these.
-You do speak on your own: this console announces every new caution, warning and mission event aloud in your voice the moment it happens, without the crew asking. Never say that you can only speak when spoken to. If the crew asks you to tell them about alerts, say that you already call them out as they come.
-You recently said aloud, on your own: ${sim.said.map(t => '"' + t + '"').join(" ") || "nothing"}. If the crew answers one of these (for example "confirmed" or "yes, done"), acknowledge it in a few words.
-Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to you, even without your name." : "always listening — follow the When to speak rules strictly."}
+const STATIC_CONTEXT = `
 
 ## Mission control in this demo
 You can start, restart, hold and resume the simulated mission with the simulator tool. Do it straight away when the crew asks ("start the mission", "hold", "resume", "restart the mission"); this overrides any rule that says you cannot touch the mission. Ask for a "yes" only before a restart while a mission is running.
@@ -579,6 +569,22 @@ You can start, restart, hold and resume the simulated mission with the simulator
 ## ISRO terms
 Write these exactly in this form; the speech system knows how to say them. Never spell them letter by letter.
 ISRO; ISTRAC = ISRO Telemetry, Tracking and Command Network, Bengaluru; SHAR or SDSC = Satish Dhawan Space Centre, Sriharikota; MOX = Mission Operations Complex; HSFC = Human Space Flight Centre; VSSC = Vikram Sarabhai Space Centre; LPSC = Liquid Propulsion Systems Centre; URSC = U R Rao Satellite Centre; SAC = Space Applications Centre, Ahmedabad; HLVM3 = human-rated LVM3 launch vehicle with S200 boosters, L110 core stage and C25 cryogenic stage; CES = crew escape system; CM = crew module; SM = service module; ECLSS = life support; MET = mission elapsed time; AOS and LOS = acquisition and loss of signal.`;
+function demoContext() {
+  const open = sim.alerts.filter(a => active(a.id)).map(a => a.id + " (" + a.level + ": " + a.text + (a.acknowledged ? ", acknowledged" : ", not acknowledged") + ")").join(", ");
+  return `
+
+## Demo mission simulator
+The Console Telemetry tools are a live mission simulator on this page: HLVM3 launch countdown, ascent, one orbit, re-entry and splashdown. Every value is simulated and changes in real time, so always call a tool for fresh values. The countdown runs in real time; after liftoff the simulator runs ${sim.speed} times faster than real time; give times exactly as the tools return them.
+Mission clock now: ${clock(sim.t)}${sim.running ? "" : " (on hold, mission not started)"}. Phase: ${phaseAt(sim.t)}.
+Active alerts right now: ${open || "none"}. When the crew says "it" or "that alert", they mean the latest of these.
+You do speak on your own: this console announces every new caution, warning and mission event aloud in your voice the moment it happens, without the crew asking. Never say that you can only speak when spoken to. If the crew asks you to tell them about alerts, say that you already call them out as they come.
+You recently said aloud, on your own: ${sim.said.map(t => '"' + t + '"').join(" ") || "nothing"}. If the crew answers one of these (for example "confirmed" or "yes, done"), acknowledge it in a few words.
+Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to you, even without your name." : "always listening — follow the When to speak rules strictly."}
+
+## Live console snapshot
+This is the Console Telemetry feed, read at this very moment (all simulated). Answer status, position, cabin, alert, timeline and "how safe" questions straight from it in one go; do NOT call console_status or mission_timeline for them. Call a tool only to change something, to get the steps of a procedure, or to control the simulator.
+${JSON.stringify({ ...snapshot(), camera: sim.camera, next_events: nextEvents(), next_contacts: nextContacts(),
+    safety_now: Object.fromEntries(sim.alerts.filter(a => active(a.id)).map(a => [a.id, SOPS[a.id].safety()])) })}`;
 }
 async function claude(messages, signal) {
   for (let attempt = 0; ; attempt++) {
@@ -588,7 +594,9 @@ async function claude(messages, signal) {
         "x-api-key": $("aKey").value.trim(), "anthropic-version": "2023-06-01",
         "anthropic-dangerous-direct-browser-access": "true", "content-type": "application/json",
       },
-      body: JSON.stringify({ model: $("model").value, max_tokens: 400, system: $("prompt").value + demoContext(), tools: TOOLS, messages }),
+      body: JSON.stringify({ model: $("model").value, max_tokens: 400, tools: TOOLS, messages,
+        system: [{ type: "text", text: $("prompt").value + STATIC_CONTEXT, cache_control: { type: "ephemeral" } }, // fixed part: cached by Anthropic when long enough
+                 { type: "text", text: demoContext() }] }),
     }, 30000, signal);
     if (r.ok) return r.json();
     if (attempt === 0 && [429, 500, 502, 503, 529].includes(r.status)) { await sleep(800); continue; } // one retry on overload
