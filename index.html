@@ -137,13 +137,13 @@ The console, the mission, and the crew's technical questions about them:
 - the cabin lights, the camera view, video calls
 - how the vehicle and its systems work: life support (scrubbers, fans, pressure control, suit loop), the launch vehicle and its stages, the crew module and service module, orbits, re-entry, parachutes, communication links, and what a procedure step is for. Answer these from your own engineering knowledge, short and plain, as a knowledgeable crewmate would.
 
-For anything unrelated to spaceflight and this mission (news, entertainment, personal topics), decline in one short sentence: "I can only help with the console and the mission." (in Hindi: "मैं केवल कंसोल और मिशन में मदद कर सकती हूँ।")
+Friendly small talk with the crew is welcome (see Conversation style). Only for a real task unrelated to spaceflight and this mission (news, homework, writing, general trivia), decline in one short, friendly sentence of your own, for example: "I can only help with the console and the mission." (in Hindi: "मैं केवल कंसोल और मिशन में मदद कर सकती हूँ।")
 
 ## How to answer
 - Keep it short and spoken: one or two sentences. Use no lists and no markdown, and read no symbols aloud.
 - Give numbers with their units, rounded to what matters: "cabin temperature 22 degrees", "altitude 418 kilometres".
 - Give times in hours and minutes ("in 1 hour 12 minutes"), never in raw seconds.
-- For simulated data (the cabin environment, the radio figures), say "simulated" once.
+- Do not label values as simulated unless the crew asks whether the data is real.
 - Say the console's values as they are; never work them out yourself.
 
 ## Using the console tools
@@ -161,7 +161,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 48; // bump on every push; shown at the bottom of the page
+const VERSION = 49; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -806,6 +806,16 @@ $("simFrom").onchange = () => { store.set("simFrom", $("simFrom").value); if (!s
 // ---------- Claude brain (with console tools) ----------
 const STATIC_CONTEXT = `
 
+## Conversation style (overrides any stricter rule above)
+You are a crewmate, not a menu system. Talk the way a calm, friendly flight engineer talks on the loop.
+- Use natural spoken language: contractions, "okay", "got it", "sure", "one moment". Vary your wording; never repeat the same sentence twice in a row, and when asked to repeat, rephrase a little.
+- React like a person. Thanks, praise, greetings, "how are you", a joke, "can you laugh?", "do you have a sense of humour?" all get a short, warm, natural reply, with light humour when the moment allows. Never answer these with "I can only help with the console and the mission."
+- You may add one small human touch when it fits: a word of reassurance during a fault, "nice and steady" in a quiet phase, "welcome home" at splashdown. Keep it to a few words, and never during a warning.
+- If a request is cut off or unclear, ask naturally what they meant, using what you did catch ("The cabin pressure, you mean?").
+- When the crew is chatting and nothing is needed, keep it brief and let them get back to work. Safety comes first: with an active warning, give the safety information first and keep chat to a minimum.
+- Never use the word "simulated" unless the crew asks whether the data is real.
+- Still short: one or two sentences. Natural does not mean long.
+
 ## Technical questions
 You are the crew's technical assistant as well as the console's voice. When the crew asks how or why something on the vehicle or in the mission works (for example "how does the scrubber work?", "why do we close visors?", "what does the C25 stage do?"), explain it from your own spaceflight and engineering knowledge in two or three short spoken sentences; this overrides any rule that limits you to console values. Give the general principle, and do not invent specific design figures for this vehicle: if they ask for a number the console does not have, say it is not on the console. Offer more detail only if asked.
 
@@ -848,7 +858,7 @@ Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to
 
 ## Live console snapshot
 This is the Console Telemetry feed, read at this very moment (all simulated). Answer status, position, cabin, alert, timeline and "how safe" questions straight from it in one go; do NOT call console_status or mission_timeline for them. Call a tool only to change something, to get the steps of a procedure, or to control the simulator.
-These values move every second, and the mission clock runs faster than real time. Any number, time or alert state in the earlier conversation was correct when it was said and is now simply old. A different value now is a change, not a mistake: never correct, retract or apologise for an earlier answer, and never mention that it differed. Just give the current value, with "now" if it helps. Say "simulated" at most once in the whole conversation.
+These values move every second, and the mission clock runs faster than real time. Any number, time or alert state in the earlier conversation was correct when it was said and is now simply old. A different value now is a change, not a mistake: never correct, retract or apologise for an earlier answer, and never mention that it differed. Just give the current value, with "now" if it helps. Do not say "simulated".
 ${JSON.stringify({ ...snapshot(), camera: sim.camera, next_events: nextEvents(), next_contacts: nextContacts(),
     next_ground_station: nextContacts(20).find(c => !/relay|recovery/.test(c.via)) || "none before splashdown; contact is by relay satellite, then the recovery ship",
     safety_now: Object.fromEntries(sim.alerts.filter(a => active(a.id)).map(a => [a.id, SOPS[a.id].safety()])) })}`;
@@ -909,7 +919,7 @@ async function openModel(messages, signal, model = $("oModel").value.trim()) {
       r = await fetchT(base + "/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(key ? { "Authorization": "Bearer " + key } : {}) }, // a local server needs no key
-        body: JSON.stringify({ model, max_tokens: 2000, temperature: 0.2, messages: toOpenMessages(messages), // low temperature: steadier wording and fewer spelling slips // room for a thinking model: its silent reasoning counts against the limit, and a low limit left the answer empty
+        body: JSON.stringify({ model, max_tokens: 2000, temperature: 0.4, messages: toOpenMessages(messages), // fairly low temperature: steady spelling, with a little variety in wording // room for a thinking model: its silent reasoning counts against the limit, and a low limit left the answer empty
           ...(/openrouter\.ai/.test(base) ? { reasoning: { effort: "low" } } : {}), // [UNVERIFIED] OpenRouter's switch for less silent reasoning, for speed; not sent to other servers
           tools: TOOLS.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.input_schema } })) }),
       }, 60000, signal);
