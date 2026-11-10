@@ -163,7 +163,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 55; // bump on every push; shown at the bottom of the page
+const VERSION = 56; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -705,6 +705,8 @@ const TOOLS = [
       seconds_before: { type: "number" }, in_seconds: { type: "number" }, repeat_every_seconds: { type: "number" }, message: { type: "string" },
       action: { type: "object", properties: { tool: { type: "string", enum: TIMED_TOOLS }, input: { type: "object" } }, required: ["tool", "input"] } } } },
   { name: "cancel_reminders", description: "Cancel all pending reminders and countdowns.", input_schema: { type: "object", properties: {} } },
+  { name: "set_reply_language", description: "Change, for the rest of the session and later ones, which language you reply in. Call it when the crew asks (\"switch to English only\", \"answer in Hindi again\", \"reply in my language\"). english = always English, Hindi still understood. auto = same language as the crew.",
+    input_schema: { type: "object", properties: { language: { type: "string", enum: ["english", "auto"] } }, required: ["language"] } },
   { name: "inject_fault", description: "Demo control: trigger a simulated fault now, when the crew or the demo operator asks to simulate or test an alert.",
     input_schema: { type: "object", properties: { alert_id: { type: "string", enum: Object.keys(ANOM) } }, required: ["alert_id"] } },
   { name: "acknowledge_alert", description: "Acknowledge a caution or warning by id, or all.", input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
@@ -738,6 +740,11 @@ function runTool(name, a) {
       return { done: true, lights: snapshot("lights") };
     }
     case "inject_fault": return injectFault(a.alert_id);
+    case "set_reply_language": {
+      if (!["english", "auto"].includes(a.language)) return { done: false, reason: "unknown language setting" };
+      $("replyLang").value = a.language === "english" ? "en" : "auto"; store.set("replyLang", $("replyLang").value); // saved, so it outlasts the short conversation memory
+      return { done: true, reply_language: a.language === "english" ? "always English from now on" : "same language as the crew from now on" };
+    }
     case "cancel_reminders": { const n = sim.reminders.length; sim.reminders = []; return { done: true, cancelled: n }; }
     case "set_reminder": {
       if (a.action && !TIMED_TOOLS.includes(a.action.tool)) return { done: false, reason: "that action cannot be put on a timer", allowed: TIMED_TOOLS };
