@@ -89,6 +89,7 @@
       <label>Open model: API key (leave empty for a local server)<input id="oKey" type="password" autocomplete="off"></label>
       <label>Open model: model name, exactly as the provider lists it<input id="oModel" autocomplete="off" placeholder="copy it from the provider's model list"></label>
       <div class="row"><button id="oLoad">Load model list</button><label style="margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap"><input id="oFree" type="checkbox" style="width:auto;margin:0">Free only</label><label style="margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap"><input id="oFit" type="checkbox" style="width:auto;margin:0" checked>Open models that fit</label><label style="margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap">Max GB<input id="oMax" type="number" min="8" max="512" step="1" style="width:70px;margin:0"></label><button id="oBench" hidden>Test listed models</button><button id="oBenchClear">Clear test results</button></div>
+      <label>Hindi translation model, on the same provider (empty = the model above). Used only when "Reply language" is "Hindi by translation".<input id="oHi" autocomplete="off" placeholder="for example: google/gemma-4-26b-a4b-it"></label>
       <label>Only models whose name contains (words separated by commas; empty = all)<input id="oFind" autocomplete="off" placeholder="for example: gemma, mistral"></label>
       <select id="oPick" hidden></select>
       <label>Price to estimate cost, in $ per million tokens (optional; copy it from the provider's price list)<input id="oPrice" type="number" min="0" step="0.05" placeholder="for example 0.5"></label>
@@ -164,7 +165,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 75; // bump on every push; shown at the bottom of the page
+const VERSION = 76; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -396,6 +397,9 @@ function maxGb() { return +$("oMax").value || 45; } // memory the brain may use,
 $("oMax").value = store.get("oMax", "45");
 $("oMax").onchange = () => { store.set("oMax", $("oMax").value); if (openList.length) { drawModels(openList.some(m => m.supported_parameters)); } };
 $("oFind").value = store.get("oFind", "");
+$("oHi").value = store.get("oHi", ""); $("oHi").oninput = () => store.set("oHi", $("oHi").value.trim());
+// a brain that is good at tools but writes faulty Hindi (Qwen 3.8) can leave the Hindi sentence to a second model
+const hindiModel = () => $("oHi").value.trim() || $("oModel").value.trim();
 $("oFind").oninput = () => { store.set("oFind", $("oFind").value); if (openList.length) drawModels(openList.some(m => m.supported_parameters)); };
 $("oFit").checked = store.get("oFit", "1") === "1";
 $("oFit").onchange = () => { store.set("oFit", $("oFit").checked ? "1" : "0"); if (openList.length) drawModels(openList.some(m => m.supported_parameters)); };
@@ -466,7 +470,7 @@ function log(who, text) {
 }
 $("clear").onclick = () => { $("log").innerHTML = ""; history = []; record.length = 0; };
 $("copyLog").onclick = async () => {
-  const text = ["Arya demo v" + VERSION + " | model " + brainModel() + (openBrain() ? " via " + $("oUrl").value.trim() + " | usage " + usageText() : "") + " | mode " + mode + " | sim " + sim.speed + "x at " + clock(sim.t) + (sim.running ? "" : " HOLD"),
+  const text = ["Arya demo v" + VERSION + " | model " + brainModel() + (openBrain() && $("oHi").value.trim() ? " + Hindi by " + $("oHi").value.trim() : "") + (openBrain() ? " via " + $("oUrl").value.trim() + " | usage " + usageText() : "") + " | mode " + mode + " | sim " + sim.speed + "x at " + clock(sim.t) + (sim.running ? "" : " HOLD"),
     "mic: " + micDiag(), navigator.userAgent, "--- oldest first ---", ...record].join("\n");
   let ok = false;
   try { await navigator.clipboard.writeText(text); ok = true; }
@@ -1074,8 +1078,8 @@ async function translateHi(text, signal) {
     const base = $("oUrl").value.trim().replace(/\/+$/, ""), key = $("oKey").value.trim();
     const r = await fetchT(base + "/chat/completions", { method: "POST",
       headers: { "Content-Type": "application/json", ...(key ? { "Authorization": "Bearer " + key } : {}) },
-      body: JSON.stringify({ model: $("oModel").value.trim(), max_tokens: 600, temperature: 0,
-        ...thinkOff(base, $("oModel").value.trim()),
+      body: JSON.stringify({ model: hindiModel(), max_tokens: 600, temperature: 0,
+        ...thinkOff(base, hindiModel()),
         messages: [{ role: "system", content: HINDI_RULES }, { role: "user", content: text }] }) }, 30000, signal);
     if (!r.ok) throw new Error("LLM: " + r.status + " " + (await r.text()).slice(0, 120));
     const j = await r.json(); addUsage(base, j.usage);
