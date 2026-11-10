@@ -137,7 +137,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 31; // bump on every push; shown at the bottom of the page
+const VERSION = 32; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -372,7 +372,7 @@ function simRestart(running) {
   sim = {
     t: T_START, last: Date.now(), envLast: 0, acc: 0, running, speed: +$("simSpeed").value || 4,
     env: { temp: 22.1, press: 101.3, hum: 46, o2: 20.9, co2: 0.30 }, rate: { co2: 0, press: 0 },
-    alerts: [], fired: new Set(), fixed: new Set(), announce: [], said: [],
+    alerts: [], fired: new Set(), fixed: new Set(), announce: [], said: [], reminders: [],
     lights: { spots: [true, false], zones: [true, true, true, true, false, false], dim: 70 },
     camera: "cabin wide", call: null, link: "Sriharikota",
   };
@@ -454,6 +454,10 @@ function simTick() {
   const link = contactNow(); // signal gained or lost is an event too
   if (!link !== !sim.link && sim.t > 0 && sim.t < T_SPLASH && !active("COMM1_LOSS")) say(link ? "Acquisition of signal, " + link + "." : "Loss of signal.", false);
   sim.link = link;
+  if (sim.reminders.some(r => sim.t >= r.at)) { // reminders and countdowns the crew asked for
+    sim.reminders.filter(r => sim.t >= r.at).forEach(r => say(r.text, true));
+    sim.reminders = sim.reminders.filter(r => sim.t < r.at);
+  }
   for (const [id, a] of Object.entries(ANOM)) if (sim.t >= a.t && !sim.fired.has(id)) {
     sim.fired.add(id); sim.alerts.push({ id, text: a.text, level: a.level, acknowledged: false, saidAt: now });
     say((a.level === "warning" ? "Warning. " : "Caution. ") + a.text + ".", true, a.level === "warning");
@@ -532,6 +536,10 @@ const TOOLS = [
     input_schema: { type: "object", properties: { action: { type: "string", enum: ["call", "hang_up"] }, contact: { type: "string", enum: CONTACTS } }, required: ["action"] } },
   { name: "simulator", description: "Control the simulated mission on the crew's request: start (or restart) from T minus 50 seconds, hold the clock, or resume it.",
     input_schema: { type: "object", properties: { action: { type: "string", enum: ["start", "restart", "hold", "resume"] } }, required: ["action"] } },
+  { name: "set_reminder", description: "Make yourself speak a reminder later, without being asked again. Either give event + seconds_before (\"remind me 10 seconds before orbit insertion\"), or in_seconds from now (\"remind me in 2 minutes to check the valve\"). With event + repeat_every_seconds you count down aloud at that interval until the event. Seconds are mission-clock seconds. message is the exact words you will say then, in the crew's language; leave it out for a countdown.",
+    input_schema: { type: "object", properties: { event: { type: "string", enum: MILESTONES.map(m => m[1]).filter(n => !/callout|status|final count|mission brief/.test(n)) },
+      seconds_before: { type: "number" }, in_seconds: { type: "number" }, repeat_every_seconds: { type: "number" }, message: { type: "string" } } } },
+  { name: "cancel_reminders", description: "Cancel all pending reminders and countdowns.", input_schema: { type: "object", properties: {} } },
   { name: "inject_fault", description: "Demo control: trigger a simulated fault now, when the crew or the demo operator asks to simulate or test an alert.",
     input_schema: { type: "object", properties: { alert_id: { type: "string", enum: Object.keys(ANOM) } }, required: ["alert_id"] } },
   { name: "acknowledge_alert", description: "Acknowledge a caution or warning by id, or all.", input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
@@ -565,6 +573,24 @@ function runTool(name, a) {
       return { done: true, lights: snapshot("lights") };
     }
     case "inject_fault": return injectFault(a.alert_id);
+    case "cancel_reminders": { const n = sim.reminders.length; sim.reminders = []; return { done: true, cancelled: n }; }
+    case "set_reminder": {
+      const ev = a.event && MILESTONES.find(m => m[1] === a.event), left = x => x < 120 ? Math.round(x) + " seconds" : Math.round(x / 60) + " minutes";
+      let list = [];
+      if (ev) {
+        if (ev[0] <= sim.t) return { done: false, reason: a.event + " has already happened" };
+        const mk = x => ({ at: ev[0] - x, text: a.message && !a.repeat_every_seconds ? a.message : left(x) + " to " + a.event + "." });
+        if (a.repeat_every_seconds > 0) { // ponytail: at most 40 callouts, no closer than 5 s apart, so speech can keep up
+          const step = Math.max(5, a.repeat_every_seconds);
+          for (let x = Math.floor((ev[0] - sim.t - 1) / step) * step; x >= step && list.length < 40; x -= step) list.push(mk(x));
+        } else list.push(mk(Math.max(0, a.seconds_before ?? 10)));
+        list = list.filter(r => r.at > sim.t);
+        if (!list.length) return { done: false, reason: "too late: " + a.event + " is only " + fmtDur(ev[0] - sim.t) + " away" };
+      } else if (a.in_seconds > 0) list.push({ at: sim.t + a.in_seconds, text: a.message || "Reminder." });
+      else return { done: false, reason: "give an event, or in_seconds" };
+      sim.reminders.push(...list);
+      return { done: true, reminders_set: list.length, first_in: fmtDur(list[0].at - sim.t), note: "You will speak them by yourself; confirm in a few words." };
+    }
     case "simulator":
       if (a.action === "start" && (sim.running || sim.t > T_START)) return { done: false, reason: "mission is already running at " + clock(sim.t) + "; use restart to begin again" };
       if (a.action === "start" || a.action === "restart") { simRestart(true); log("Sim", "Mission started by voice at T minus 50 seconds. After liftoff: " + sim.speed + "× speed, about " + Math.round(T_SPLASH / sim.speed / 60) + " minutes to splashdown."); return { done: true, mission_clock: "T minus 50 s", note: "You will now read the mission brief aloud by yourself; reply with two or three words only." }; }
@@ -659,6 +685,7 @@ The Console Telemetry tools are a live mission simulator on this page: HLVM3 lau
 Mission clock now: ${clock(sim.t)}${sim.running ? "" : " (on hold, mission not started)"}. Phase: ${phaseAt(sim.t)}.
 Active alerts right now: ${open || "none"}. When the crew says "it" or "that alert", they mean the latest of these.
 You do speak on your own: this console announces every new caution, warning and mission event aloud in your voice the moment it happens, without the crew asking. Never say that you can only speak when spoken to. If the crew asks you to tell them about alerts, say that you already call them out as they come.
+You can also remind and count down: when the crew asks "remind me when…", "tell me 10 seconds before…", "count down every 10 seconds", call set_reminder straight away. Never say you cannot set a reminder or count down. Reminders pending now: ${sim.reminders.length}.
 You recently said aloud, on your own: ${sim.said.map(t => '"' + t + '"').join(" ") || "nothing"}. If the crew answers one of these (for example "confirmed" or "yes, done"), acknowledge it in a few words.
 Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to you, even without your name." : "always listening — follow the When to speak rules strictly."}
 
@@ -781,7 +808,7 @@ async function finishTurn() {
     if (turn !== ac) return;
     if (!text) { // say why, so a mic or permission fault is not mistaken for a speech-recognition miss
       turn = null; const st = uStat, sec = (st.n * 4096 / ctx.sampleRate).toFixed(1);
-      if (st.n < 3) { setState("idle"); const d = "No sound reached the app from the microphone: " + micDiag() + ", permission " + await micPermission() + "."; status(d + " Tap again.", true); log("Error", d); }
+      if (st.n < 3) { setState("idle"); const d = "No sound reached the app from the microphone: " + micDiag() + ", permission " + await micPermission() + "."; status(d + " Restarting the mic; tap again.", true); log("Error", d); startAudio(true).catch(e => status(e.message, true)); } // repair after the fact; a check before the turn gave false alarms
       else if (st.peak < 0.004) { setState("idle"); status("Microphone was silent for " + sec + " s (level " + st.peak.toFixed(4) + "). Check that no other app is using the mic, then tap again.", true); log("Error", "Silent mic: " + micDiag()); }
       else setState("idle", "Heard " + sec + " s of sound but no words. Speak a little longer or closer.");
       return;
@@ -954,14 +981,6 @@ talk.addEventListener("pointerdown", async e => {
     if (mode !== "ptt") return;
   }
   if (mode === "ptt" && state === "idle") {
-    if (!micAlive() && performance.now() - micRetryAt > 10000) { // the system took the mic away: get it back first, then ask for the tap again
-      micRetryAt = performance.now(); // one repair try per 10 s; after that the turn goes ahead anyway, so this check can never lock the crew out
-      try {
-        if (await ensureMic()) status("Microphone restarted. Tap or hold again to talk.");
-        else { const d = "Mic check failed: " + micDiag() + ", permission " + await micPermission() + ". Tap again to try anyway."; status(d, true); log("Error", d); }
-      } catch (err) { status(err.message, true); log("Error", err.message); }
-      return;
-    }
     try { talk.setPointerCapture(e.pointerId); } catch {}
     pressAt = performance.now(); latched = false; utt = startUtterance([]); setState("listening");
   }
