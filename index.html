@@ -62,7 +62,7 @@
     <select id="simJump" title="Jump to a major event"><option value="">Jump to…</option></select>
     <button id="simPause" hidden>❚❚ Hold</button> <button id="simStart">▶ Start mission</button></div></div>
   <div id="hud"></div>
-  <div class="hudbar"><span>Trigger a fault</span><div id="faults"></div></div>
+  <div class="hudbar"><span>Trigger a fault</span><select id="faults" title="Trigger a fault"><option value="">Choose…</option></select></div>
 
   <details id="settings">
     <summary>Settings</summary>
@@ -165,7 +165,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 76; // bump on every push; shown at the bottom of the page
+const VERSION = 77; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -606,6 +606,11 @@ const ANOM = { // faults injected during the mission
   CO2_HIGH: { t: 1700, level: "caution", text: "Cabin carbon dioxide high", fix: "switch_co2_scrubber_b" },
   CABIN_PRESS_LOW: { t: 2600, level: "warning", text: "Cabin pressure dropping", fix: "close_cabin_vent_valve" },
   COMM1_LOSS: { t: 3300, level: "caution", text: "Communication link 1 lost", fix: "select_comm_link_2" },
+  O2_LOW: { t: Infinity, level: "caution", text: "Cabin oxygen low", fix: "open_oxygen_makeup_valve" },
+  CABIN_TEMP_HIGH: { t: Infinity, level: "caution", text: "Cabin temperature high", fix: "select_coolant_loop_2" },
+  SMOKE: { t: Infinity, level: "warning", text: "Smoke detected in cabin", fix: "isolate_avionics_bay_2_power" },
+  BUS_B_LOW: { t: Infinity, level: "caution", text: "Main bus B voltage low", fix: "tie_bus_b_to_bus_a" },
+  COMPUTER1_FAULT: { t: Infinity, level: "caution", text: "Flight computer 1 fault", fix: "switch_to_flight_computer_2" },
 };
 const toLimit = (v, limit, rate) => rate * Math.sign(limit - v) > 1e-3 ? "about " + Math.max(1, Math.round((limit - v) / rate)) + " minutes to the limit at the current trend" : "stable, not moving toward the limit";
 const SOPS = { // demo procedures
@@ -621,6 +626,21 @@ const SOPS = { // demo procedures
   COMM1_LOSS: { steps: ["Check the link status on the console.", "Select communication link 2.", "Confirm ground contact returns at the next pass or relay window.",
       "If both links fail, continue the timeline on board; the deorbit sequence is automatic."],
     safety: () => "Safe. Only voice and telemetry to ground are affected; vehicle systems are normal." },
+  O2_LOW: { steps: ["Confirm the reading on the cabin page: oxygen below 19.5 percent.", "Open the oxygen make-up valve from the console.",
+      "Watch the reading for 5 minutes; it should rise above 20 percent.", "If it falls below 18 percent, close visors, go on suit loop and report to ISTRAC."],
+    safety: () => "Oxygen " + sim.env.o2.toFixed(1) + " percent, limit 18 percent. Safe for now; the suit loop is the backup." },
+  CABIN_TEMP_HIGH: { steps: ["Confirm the reading on the cabin page: cabin temperature above 27 degrees.", "Confirm both cabin fans are running.", "Select coolant loop 2 from the console.",
+      "Watch the reading for 10 minutes; it should fall below 27 degrees.", "If it passes 32 degrees, go on suit loop for cooling and report to ISTRAC."],
+    safety: () => "Cabin temperature " + sim.env.temp.toFixed(1) + " degrees, limit 32 degrees. Uncomfortable but safe; the suit loop gives cooling if needed." },
+  SMOKE: { steps: ["Close visors and select suit loop now.", "Check the console for the bay that shows the smoke flag.", "Isolate avionics bay 2 power from the console.",
+      "Confirm the smoke reading falls within 2 minutes.", "If smoke continues, keep visors closed and prepare for an early deorbit with ISTRAC."],
+    safety: () => "Warning level. Crew is safe with visors closed and suit loop on. Cabin oxygen " + sim.env.o2.toFixed(1) + " percent." },
+  BUS_B_LOW: { steps: ["Confirm the reading on the power page: bus B below 26 volts.", "Switch off non-essential loads: cabin spot lights and the external camera.", "Tie bus B to bus A from the console.",
+      "Confirm bus B returns above 27 volts.", "If it does not recover, stay on bus A and report to ISTRAC at the next contact."],
+    safety: () => "Bus B " + sim.env.busB.toFixed(1) + " volts, limit 24 volts. Safe: bus A alone can carry all essential loads." },
+  COMPUTER1_FAULT: { steps: ["Confirm flight computer 2 shows healthy on the console.", "Switch to flight computer 2 from the console.", "Confirm guidance and displays are normal on computer 2.",
+      "Do not restart computer 1 without ISTRAC; report at the next contact."],
+    safety: () => "Safe. Flight computer 2 is healthy and can fly the whole mission; the deorbit sequence is unaffected." },
 };
 // Situational awareness: what Arya adds on her own while a fault is open
 const NOW = { // one short line with the live value
@@ -628,6 +648,11 @@ const NOW = { // one short line with the live value
   CO2_HIGH: () => "Carbon dioxide " + sim.env.co2.toFixed(2) + " percent, limit 1.0.",
   CABIN_PRESS_LOW: () => "Cabin pressure " + sim.env.press.toFixed(1) + " kilopascals, limit 80.",
   COMM1_LOSS: () => "No ground link.",
+  O2_LOW: () => "Oxygen " + sim.env.o2.toFixed(1) + " percent, limit 18.",
+  CABIN_TEMP_HIGH: () => "Cabin temperature " + sim.env.temp.toFixed(1) + " degrees, limit 32.",
+  SMOKE: () => "Visors closed and suit loop on is the first step.",
+  BUS_B_LOW: () => "Bus B " + sim.env.busB.toFixed(1) + " volts, limit 24.",
+  COMPUTER1_FAULT: () => "Flight computer 2 is healthy.",
 };
 const ESCALATE = [ // [fault, test, what to say] — spoken once each time the value gets worse
   ["CO2_HIGH", () => sim.env.co2 >= 0.8, () => "Carbon dioxide still rising, now " + sim.env.co2.toFixed(2) + " percent. Limit is 1.0."],
@@ -744,8 +769,9 @@ function simTick() {
   if (now - sim.envLast < 1000) return; // cabin values move once a second; the clock itself ticks 4 times a second
   const dtE = sim.acc; sim.acc = 0; sim.envLast = now;
   const e = sim.env, p0 = e.press, c0 = e.co2;
-  e.temp = walk(e.temp, active("FAN2_LOW") ? 24.5 : 22, 0.02, 0.06, 18, 30);
-  e.hum = walk(e.hum, 46, 0.02, 0.3, 30, 70); e.o2 = walk(e.o2, 20.9, 0.03, 0.04, 19.5, 23);
+  e.temp = walk(e.temp, active("CABIN_TEMP_HIGH") ? 30.5 : active("FAN2_LOW") ? 24.5 : 22, 0.02, 0.06, 18, 34);
+  e.hum = walk(e.hum, 46, 0.02, 0.3, 30, 70); e.o2 = walk(e.o2, active("O2_LOW") ? 18.6 : 20.9, 0.03, 0.04, 17, 23);
+  e.busB = walk(e.busB ?? 28, active("BUS_B_LOW") ? 24.8 : 28, 0.03, 0.05, 22, 29);
   e.co2 = walk(e.co2, active("CO2_HIGH") ? 0.95 : 0.30, 0.012, 0.006, 0.1, 1.5);
   e.press = active("CABIN_PRESS_LOW") ? Math.max(60, e.press - 0.006 * dtE) : walk(e.press, 101.3, 0.01, 0.04, 60, 103);
   if (dtE > 0) { // trend per mission minute, smoothed
@@ -776,7 +802,8 @@ function snapshot(section) {
     lights: { spots_on: L.spots.flatMap((v, i) => v ? [i + 1] : []), zones_on: L.zones.flatMap((v, i) => v ? [i + 1] : []), dim_percent: L.dim },
     camera: { view: sim.camera, available: CAMERAS },
     calls: { active: sim.call || "none", contacts: CONTACTS, calls_possible: link ? "yes" : "no, needs ground contact" },
-    computer: { status: "normal", cpu: Math.round(30 + 10 * Math.random()) + " %", display: "nominal" },
+    power: { bus_a: "28.0 V", bus_b: (sim.env.busB ?? 28).toFixed(1) + " V" },
+    computer: { status: active("COMPUTER1_FAULT") ? "flight computer 1 fault, computer 2 healthy" : "normal", cpu: Math.round(30 + 10 * Math.random()) + " %", display: "nominal" },
   };
   return section && all[section] ? all[section] : all;
 }
@@ -823,14 +850,16 @@ function injectFault(id) { // fire a fault now, by button or by voice; a fixed f
   sim.alerts = sim.alerts.filter(a => a.id !== id);
   ESCALATE.forEach(([eid], i) => { if (eid === id) sim.fired.delete("esc" + i); });
   sim.alerts.push({ id, text: ANOM[id].text, level: ANOM[id].level, acknowledged: false, saidAt: Date.now() });
+  const e = sim.env; // before this the alert said "carbon dioxide high" while the card still showed a normal 0.3 percent
+  if (id === "CO2_HIGH") e.co2 = Math.max(e.co2, 0.62); if (id === "O2_LOW") e.o2 = Math.min(e.o2, 19.3); if (id === "CABIN_TEMP_HIGH") e.temp = Math.max(e.temp, 27.6);
+  if (id === "CABIN_PRESS_LOW") e.press = Math.min(e.press, 99.5); if (id === "BUS_B_LOW") e.busB = Math.min(e.busB ?? 28, 25.6);
   say((ANOM[id].level === "warning" ? "Warning. " : "Caution. ") + ANOM[id].text + ".", true, ANOM[id].level === "warning");
   return { done: true, triggered: ANOM[id].text, note: "You will announce it aloud by yourself; reply with two or three words only." };
 }
 for (const [id, a] of Object.entries(ANOM)) {
-  const b = document.createElement("button"); b.textContent = a.text.replace(/^Cabin |^Communication /, ""); b.style.cssText = "padding:4px 7px;font-size:12px;margin-left:4px";
-  b.onclick = () => { const r = injectFault(id); if (!r.done) status(r.reason, true); renderHud(); };
-  $("faults").append(b);
+  const o = document.createElement("option"); o.value = id; o.textContent = (a.level === "warning" ? "Warning: " : "Caution: ") + a.text; $("faults").append(o);
 }
+$("faults").onchange = () => { wakeAudio(); const id = $("faults").value; $("faults").value = ""; if (!id) return; const r = injectFault(id); status(r.done ? "Triggered: " + ANOM[id].text : "Not triggered: " + r.reason, !r.done); renderHud(); };
 const TOOLS = [
   { name: "console_status", description: "Live console readings. section: mission (phase, mission clock, altitude, velocity, g load, position, ground contact, next event), cabin, alerts, lights, camera, calls, computer, or all.",
     input_schema: { type: "object", properties: { section: { type: "string", enum: ["mission", "cabin", "alerts", "lights", "camera", "calls", "computer", "all"] } }, required: ["section"] } },
@@ -1015,7 +1044,7 @@ You are the crew's technical assistant as well as the console's voice. When the 
 
 ## Mission control in this demo
 You can start, restart, hold and resume the simulated mission, jump its clock to just before a major event (liftoff, S200 separation, orbit insertion, deorbit burn, re-entry, parachutes, splashdown), and set its speed to 1, 4 or 12 times real time, with the simulator tool. Do it straight away when the crew asks ("start the mission", "hold", "resume", "restart the mission"); this overrides any rule that says you cannot touch the mission. Ask for a "yes" only before a restart while a mission is running.
-You can also trigger a simulated fault with inject_fault when asked ("simulate a pressure leak", "test the CO2 alert"): FAN2_LOW, CO2_HIGH, CABIN_PRESS_LOW, COMM1_LOSS.
+You can also trigger a simulated fault with inject_fault when asked ("simulate a pressure leak", "test the CO2 alert", "simulate smoke"): ${Object.keys(ANOM).join(", ")}.
 
 ## Situational awareness (your main job)
 The crew is busy with their hands and eyes. Keep them aware with the fewest words.
