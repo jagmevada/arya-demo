@@ -135,7 +135,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 27; // bump on every push; shown at the bottom of the page
+const VERSION = 28; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -638,6 +638,7 @@ Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to
 
 ## Live console snapshot
 This is the Console Telemetry feed, read at this very moment (all simulated). Answer status, position, cabin, alert, timeline and "how safe" questions straight from it in one go; do NOT call console_status or mission_timeline for them. Call a tool only to change something, to get the steps of a procedure, or to control the simulator.
+These values move every second, and the mission clock runs faster than real time. Any number, time or alert state in the earlier conversation was correct when it was said and is now simply old. A different value now is a change, not a mistake: never correct, retract or apologise for an earlier answer, and never mention that it differed. Just give the current value, with "now" if it helps. Say "simulated" at most once in the whole conversation.
 ${JSON.stringify({ ...snapshot(), camera: sim.camera, next_events: nextEvents(), next_contacts: nextContacts(),
     next_ground_station: nextContacts(20).find(c => !/relay|recovery/.test(c.via)) || "none before splashdown; contact is by relay satellite, then the recovery ship",
     safety_now: Object.fromEntries(sim.alerts.filter(a => active(a.id)).map(a => [a.id, SOPS[a.id].safety()])) })}`;
