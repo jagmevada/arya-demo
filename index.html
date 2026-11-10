@@ -135,7 +135,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 26; // bump on every push; shown at the bottom of the page
+const VERSION = 27; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -522,7 +522,8 @@ function runTool(name, a) {
   const L = sim.lights;
   switch (name) {
     case "console_status": return snapshot(a.section);
-    case "mission_timeline": return { mission_clock: snapshot("mission").mission_clock, next_events: nextEvents(), next_contacts: nextContacts() };
+    case "mission_timeline": return { mission_clock: snapshot("mission").mission_clock, next_events: nextEvents(), next_contacts: nextContacts(),
+      next_ground_station: nextContacts(20).find(c => !/relay|recovery/.test(c.via)) || "none before splashdown" };
     case "get_sop": {
       const id = a.alert_id || [...sim.alerts].reverse().find(x => active(x.id))?.id;
       if (!id || !sim.fired.has(id)) return { done: false, reason: "no such alert right now", alerts: snapshot("alerts") };
@@ -638,6 +639,7 @@ Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to
 ## Live console snapshot
 This is the Console Telemetry feed, read at this very moment (all simulated). Answer status, position, cabin, alert, timeline and "how safe" questions straight from it in one go; do NOT call console_status or mission_timeline for them. Call a tool only to change something, to get the steps of a procedure, or to control the simulator.
 ${JSON.stringify({ ...snapshot(), camera: sim.camera, next_events: nextEvents(), next_contacts: nextContacts(),
+    next_ground_station: nextContacts(20).find(c => !/relay|recovery/.test(c.via)) || "none before splashdown; contact is by relay satellite, then the recovery ship",
     safety_now: Object.fromEntries(sim.alerts.filter(a => active(a.id)).map(a => [a.id, SOPS[a.id].safety()])) })}`;
 }
 async function claude(messages, signal) {
@@ -648,7 +650,7 @@ async function claude(messages, signal) {
         "x-api-key": $("aKey").value.trim(), "anthropic-version": "2023-06-01",
         "anthropic-dangerous-direct-browser-access": "true", "content-type": "application/json",
       },
-      body: JSON.stringify({ model: $("model").value, max_tokens: 400, tools: TOOLS, messages,
+      body: JSON.stringify({ model: $("model").value, max_tokens: 700, tools: TOOLS, messages,
         system: [{ type: "text", text: $("prompt").value + STATIC_CONTEXT, cache_control: { type: "ephemeral" } }, // fixed part: cached by Anthropic when long enough
                  { type: "text", text: demoContext() }] }),
     }, 30000, signal);
@@ -668,8 +670,8 @@ async function think(userText, signal) {
       const j = await claude(history, signal);
       history.push({ role: "assistant", content: j.content });
       const uses = j.content.filter(c => c.type === "tool_use");
-      if (j.stop_reason !== "tool_use" || !uses.length)
-        return j.content.filter(c => c.type === "text").map(c => c.text).join("").trim() || "...";
+      if (!uses.length) return j.content.filter(c => c.type === "text").map(c => c.text).join("").trim() || "...";
+      // Every tool call gets its result, whatever the stop reason: a call left without one makes the API refuse the whole conversation.
       status("Arya is checking the console…");
       history.push({ role: "user", content: uses.map(u => {
         const res = runTool(u.name, u.input || {}); renderHud();
@@ -677,7 +679,11 @@ async function think(userText, signal) {
       }) });
     }
     throw new Error("Too many tool calls in one turn.");
-  } catch (e) { history.length = start; throw e; } // failed or cancelled turn leaves no half-finished tool call behind
+  } catch (e) { // failed or cancelled turn leaves no half-finished tool call behind
+    if (/^Claude: 400/.test(e.message)) history = []; // the API rejected the conversation itself: start clean so the next question works
+    else history.length = Math.min(history.length, start);
+    throw e;
+  }
 }
 
 // ---------- Sonic TTS: streamed, plays as the audio arrives ----------
