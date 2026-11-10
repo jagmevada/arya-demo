@@ -131,7 +131,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 20; // bump on every push; shown at the bottom of the page
+const VERSION = 21; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -629,6 +629,7 @@ async function think(userText, signal) {
 // ---------- Sonic TTS: streamed, plays as the audio arrives ----------
 const TTS_RATE = 24000;
 function spoken(text) { // apply the pronunciation list; the log keeps the written form
+  text = text.replace(/(\d)\s?[gG]\b(?!-)/g, "$1 gee"); // "2.3 g" is g-load, not grams
   for (const line of $("lex").value.split("\n")) {
     const [w, say] = line.split("=").map(x => x.trim());
     if (w && say) try { text = text.replace(new RegExp("\\b" + w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "g"), say); } catch {}
