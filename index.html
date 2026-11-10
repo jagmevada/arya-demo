@@ -10,29 +10,31 @@
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:16px/1.4 -apple-system, system-ui, sans-serif;
          padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
-  main { max-width:760px; margin:0 auto; padding:16px; display:flex; flex-direction:column; gap:14px; min-height:100vh; }
+  main { max-width:760px; margin:0 auto; padding:10px 12px; display:flex; flex-direction:column; gap:8px; min-height:100vh; }
   header { display:flex; align-items:center; justify-content:space-between; }
-  h1 { margin:0; font-size:22px; letter-spacing:.5px; } h1 span { color:var(--acc); }
+  h1 { margin:0; font-size:14px; letter-spacing:.5px; font-weight:600; color:var(--dim); } h1 span { color:var(--acc); }
   button { font:inherit; color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:8px 14px; }
   .seg { display:flex; border:1px solid var(--line); border-radius:12px; overflow:hidden; }
   .seg button { flex:1; border:0; border-radius:0; padding:12px; background:var(--panel); }
   .seg button.on { background:var(--acc); color:#000; font-weight:600; }
-  #talk { align-self:center; width:180px; height:180px; border-radius:50%; font-size:18px; font-weight:600;
+  #talk { align-self:center; width:132px; height:132px; border-radius:50%; font-size:15px; font-weight:600; line-height:1.35;
           border:3px solid var(--line); background:var(--panel); touch-action:none; user-select:none;
           -webkit-user-select:none; -webkit-touch-callout:none; transition:all .15s; white-space:pre-line; }
   #talk.listening { border-color:var(--acc); background:#2a1a08; box-shadow:0 0 30px #ff8a1f55; }
   #talk.thinking { border-color:#6aa3ff; } #talk.speaking { border-color:var(--ok); }
-  #status { text-align:center; color:var(--dim); min-height:1.4em; } #status.err { color:var(--err); }
-  .meter { height:6px; background:var(--panel); border-radius:3px; overflow:hidden; position:relative; }
+  #status { text-align:center; color:var(--dim); min-height:1.4em; font-size:14px; } #status.err { color:var(--err); }
+  .meter { height:4px; background:var(--panel); border-radius:3px; overflow:hidden; position:relative; }
   .meter i { position:absolute; inset:0 auto 0 0; width:0; background:var(--ok); }
   .meter b { position:absolute; top:0; bottom:0; width:2px; background:var(--acc); }
-  .hudbar { display:flex; justify-content:space-between; align-items:center; color:var(--dim); font-size:13px; }
-  #hud { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:6px; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:10px; font-variant-numeric:tabular-nums; }
-  #hud div { display:flex; flex-direction:column; } #hud span { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; }
-  #hud b { font-weight:600; font-size:14px; } #hud b.ok { color:var(--ok); } #hud b.warn { color:var(--acc); } #hud b.bad { color:var(--err); }
-  .hudbar select { width:auto; margin:0; padding:6px; }
-  #log { flex:1; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; overflow-y:auto; min-height:200px; }
-  .msg { margin:0 0 10px; } .msg .who { font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; }
+  .hudbar { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:4px; color:var(--dim); font-size:12px; }
+  .hudbar button, .hudbar select { font-size:13px; padding:5px 9px; }
+  #hud { display:grid; grid-template-columns:repeat(auto-fill, minmax(104px, 1fr)); gap:6px 8px; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:8px 10px; font-variant-numeric:tabular-nums; }
+  #hud div { display:flex; flex-direction:column; } #hud span { font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; }
+  #hud b { font-weight:600; font-size:13px; line-height:1.25; } #hud b.ok { color:var(--ok); } #hud b.warn { color:var(--acc); } #hud b.bad { color:var(--err); }
+  .hudbar select { width:auto; margin:0; }
+  #log { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:8px 10px; overflow-y:auto; height:26vh; min-height:120px; font-size:14px; }
+  #log:empty::before { content:"Arya's words and yours appear here, newest on top."; color:var(--dim); font-size:13px; }
+  .msg { margin:0 0 7px; } .msg .who { font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; }
   .msg.arya .who { color:var(--acc); } .msg .t { white-space:pre-wrap; }
   details { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:10px 14px; }
   summary { cursor:pointer; color:var(--dim); }
@@ -45,26 +47,27 @@
 </head>
 <body>
 <main>
-  <header><h1><span>ARYA</span> crew voice assistant</h1><div><button id="test">Test</button> <button id="clear">Clear</button></div></header>
-
-  <div class="seg" id="mode">
-    <button data-mode="ptt">Push to talk</button>
-    <button data-mode="always">Always listening</button>
-  </div>
+  <header><h1><span>ARYA</span> crew voice assistant</h1></header>
 
   <button id="talk">Tap to start</button>
   <div id="status">Open Settings, enter both API keys, then tap the button.</div>
   <div class="meter" title="Mic level / voice threshold"><i id="lvl"></i><b id="thr"></b></div>
 
-  <div class="hudbar"><span>Mission console (simulated)</span><div>
+  <div id="log"></div>
+
+  <div class="hudbar"><span>Mission (simulated)</span><div>
     <select id="simSpeed" title="Simulator speed"><option value="1">1× real time</option><option value="4" selected>4× (30 min mission)</option><option value="12">12× (10 min)</option></select>
     <button id="simPause" hidden>❚❚ Hold</button> <button id="simStart">▶ Start mission</button></div></div>
-  <div class="hudbar"><span>Trigger a fault now</span><div id="faults"></div></div>
   <div id="hud"></div>
-  <div id="log"></div>
+  <div class="hudbar"><span>Trigger a fault</span><div id="faults"></div></div>
 
   <details id="settings">
     <summary>Settings</summary>
+    <div class="seg" id="mode" style="margin-top:10px">
+      <button data-mode="ptt">Push to talk</button>
+      <button data-mode="always">Always listening</button>
+    </div>
+    <div class="row"><button id="test">Test connections</button><button id="clear">Clear conversation</button></div>
     <label>Cartesia API key<input id="cKey" type="password" autocomplete="off" placeholder="sk_car_..."></label>
     <label>Anthropic API key<input id="aKey" type="password" autocomplete="off" placeholder="sk-ant-..."></label>
     <label>Claude model
@@ -132,7 +135,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 23; // bump on every push; shown at the bottom of the page
+const VERSION = 25; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -233,7 +236,9 @@ setInterval(() => {
 
 // ---------- Ink STT: one WebSocket per utterance ----------
 let keytermsOk = true; // [UNVERIFIED] query format for Ink keyterms; switched off automatically if Cartesia rejects it
+let uStat = { n: 0, peak: 0 }; // what the mic delivered during the current utterance, for a useful message when nothing was heard
 function startUtterance(initial) {
+  uStat = { n: initial.length, peak: 0 };
   const queue = [...initial];
   let ws = null, text = "", closing = false, resolveDone, rejectDone;
   const done = new Promise((res, rej) => { resolveDone = res; rejectDone = rej; });
@@ -488,7 +493,7 @@ function injectFault(id) { // fire a fault now, by button or by voice; a fixed f
   return { done: true, triggered: ANOM[id].text, note: "You will announce it aloud by yourself; reply with two or three words only." };
 }
 for (const [id, a] of Object.entries(ANOM)) {
-  const b = document.createElement("button"); b.textContent = a.text.replace(/^Cabin |^Communication /, ""); b.style.cssText = "padding:5px 8px;font-size:12px;margin-left:4px";
+  const b = document.createElement("button"); b.textContent = a.text.replace(/^Cabin |^Communication /, ""); b.style.cssText = "padding:4px 7px;font-size:12px;margin-left:4px";
   b.onclick = () => { const r = injectFault(id); if (!r.done) status(r.reason, true); renderHud(); };
   $("faults").append(b);
 }
@@ -740,7 +745,13 @@ async function finishTurn() {
   try {
     const text = (await u.end()).trim(), t1 = performance.now();
     if (turn !== ac) return;
-    if (!text) { turn = null; setState("idle", "Didn't catch anything."); return; }
+    if (!text) { // say why, so a mic or permission fault is not mistaken for a speech-recognition miss
+      turn = null; const st = uStat, sec = (st.n * 4096 / ctx.sampleRate).toFixed(1);
+      if (st.n < 3) { setState("idle"); status("No sound reached the app from the microphone (" + await micPermission() + " permission). Tap the button again; it will restart the mic.", true); lastAudioAt = 0; }
+      else if (st.peak < 0.004) { setState("idle"); status("Microphone was silent for " + sec + " s (level " + st.peak.toFixed(4) + "). Check that no other app is using the mic, then tap again.", true); lastAudioAt = 0; }
+      else setState("idle", "Heard " + sec + " s of sound but no words. Speak a little longer or closer.");
+      return;
+    }
     log("You", text);
     status("Arya is thinking… (tap to cancel)");
     const reply = await think(text, ac.signal), t2 = performance.now();
@@ -773,6 +784,7 @@ function onAudio(f32) {
   let sum = 0; for (let i = 0; i < f32.length; i++) sum += f32[i] * f32[i];
   const rms = Math.sqrt(sum / f32.length), loud = rms > +$("sens").value;
   peak = Math.max(peak, rms);
+  if (utt) { uStat.n++; uStat.peak = Math.max(uStat.peak, rms); }
   $("lvl").style.width = (mode === "ptt" && !utt ? 0 : Math.min(100, rms / 0.08 * 100)) + "%"; // flat meter = muted
   if (state !== "idle" && state !== "listening") { preroll = []; return; } // mic is closed while Arya thinks/speaks
   const pcm = toPcm16(f32);
@@ -794,29 +806,52 @@ function onAudio(f32) {
     }
   }
 }
+setInterval(() => { // always-listening has no button press to notice a dead mic, so watch for it
+  if (micOn && mode === "always" && state === "idle" && !micAlive() && document.visibilityState === "visible") startAudio(true).catch(e => status(e.message, true));
+}, 5000);
 let wake = null;
 async function keepAwake() { try { wake = await navigator.wakeLock?.request("screen"); } catch {} } // stop the iPad sleeping mid-demo
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && micOn) { keepAwake(); ctx?.resume().catch(() => {}); }
+  if (document.visibilityState === "visible" && micOn) { // back from another app or screen lock: wake audio and repair the mic
+    keepAwake(); ctx?.resume().catch(() => {});
+    setTimeout(() => { if (!micAlive() && !utt && !turn) startAudio(true).catch(e => status(e.message, true)); }, 700);
+  }
 });
-async function startAudio() {
-  if (micOn) return;
-  if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser gives no microphone API here. Open the page in Safari (not an in-app browser) over https.");
+let micStream = null, micNodes = [], lastAudioAt = 0;
+const micAlive = () => micOn && micStream?.getAudioTracks()[0]?.readyState === "live" && !micStream.getAudioTracks()[0].muted && performance.now() - lastAudioAt < 1500;
+async function micPermission() { try { return (await navigator.permissions.query({ name: "microphone" })).state; } catch { return "unknown"; } }
+async function startAudio(force) { // force = rebuild the mic chain after the system stopped it (screen lock, phone call, other app)
+  if (micOn && !force) return;
+  if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser gives no microphone API here. Open the page in Safari or Chrome (not an in-app browser) over https.");
   ctx ||= new (window.AudioContext || window.webkitAudioContext)();
   await ctx.resume();
+  micNodes.forEach(n => { try { n.disconnect(); } catch {} }); micNodes = [];
+  micStream?.getTracks().forEach(t => t.stop());
+  micOn = false;
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
   catch (e) {
     throw new Error(e.name === "NotAllowedError"
-      ? "Microphone blocked. In Safari tap aA → Website Settings → Microphone → Allow, then reload."
+      ? "Microphone blocked. Tap the lock or aA icon in the address bar → Permissions / Website Settings → Microphone → Allow, then reload."
+      : e.name === "NotReadableError" ? "Microphone is in use by another app (a call, a recorder). Close it and tap again."
       : "Microphone error " + e.name + ": " + e.message);
   }
+  micStream = stream;
   const src = ctx.createMediaStreamSource(stream);
   const proc = ctx.createScriptProcessor(4096, 1, 1); // ~85 ms chunks at 48 kHz
   const mute = ctx.createGain(); mute.gain.value = 0;
-  proc.onaudioprocess = e => onAudio(e.inputBuffer.getChannelData(0));
+  proc.onaudioprocess = e => { lastAudioAt = performance.now(); onAudio(e.inputBuffer.getChannelData(0)); };
   src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
-  micOn = true; keepAwake();
+  micNodes = [src, proc, mute];
+  micOn = true; lastAudioAt = performance.now(); keepAwake();
+}
+// Make sure the mic really delivers sound before a turn; rebuild it if the system took it away.
+async function ensureMic() {
+  if (ctx.state !== "running") { await ctx.resume().catch(() => {}); await sleep(150); }
+  if (micAlive()) return true;
+  status("Microphone had stopped. Restarting it…");
+  await startAudio(true); lastAudioAt = 0; await sleep(600); // only count it as alive once real audio arrives
+  return micAlive();
 }
 
 // ---------- diagnostics (no devtools on iPad) ----------
@@ -832,7 +867,7 @@ $("test").onclick = async () => {
   try {
     try { ctx ||= new (window.AudioContext || window.webkitAudioContext)(); await ctx.resume(); } catch {}
     log("Test", "Page version " + VERSION + ". Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
-    const micOk = await step("Microphone access", async () => { await startAudio(); return "allowed"; });
+    const micOk = await step("Microphone access", async () => { await startAudio(true); return "allowed, permission " + await micPermission() + ", " + ctx.sampleRate + " Hz"; });
     setState("thinking", "Running test… (tap the button to cancel)"); // keeps the mic from starting a turn during the test
     if (micOk) await step("Microphone sound", async () => {
       log("Test", "🎤 Say something now (3 seconds)…");
@@ -881,6 +916,11 @@ talk.addEventListener("pointerdown", async e => {
     if (mode !== "ptt") return;
   }
   if (mode === "ptt" && state === "idle") {
+    if (!micAlive()) { // the system took the mic away: get it back first, then ask for the tap again
+      try { status((await ensureMic()) ? "Microphone restarted. Tap or hold again to talk." : "Microphone gives no sound (" + await micPermission() + " permission). Run Test in Settings.", true); }
+      catch (err) { status(err.message, true); }
+      return;
+    }
     try { talk.setPointerCapture(e.pointerId); } catch {}
     pressAt = performance.now(); latched = false; utt = startUtterance([]); setState("listening");
   }
