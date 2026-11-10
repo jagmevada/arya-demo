@@ -158,7 +158,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 44; // bump on every push; shown at the bottom of the page
+const VERSION = 45; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -871,7 +871,9 @@ async function claude(messages, signal) {
 // The conversation is kept in Anthropic's shape; these two functions translate it to and from the OpenAI chat shape
 // used by OpenRouter, Groq, Together, and by local servers such as Ollama, llama.cpp and vLLM.
 function toOpenMessages(messages) {
-  const out = [{ role: "system", content: $("prompt").value + STATIC_CONTEXT + demoContext() }];
+  // Extra Hindi guidance for open models: a field log showed misspelled Devanagari for English-origin words
+  const hindi = "\n\n## Hindi spelling\nWhen you answer in Hindi, use short everyday words and check each word is a real, correctly spelled Hindi word. Write every English-origin or technical word in English letters, never in Devanagari: lights, camera, zone, spot, valve, scrubber, fan, pressure, oxygen, orbit, alert, caution, warning, mission. Example: \"सभी lights बंद कर दी हैं।\"";
+  const out = [{ role: "system", content: $("prompt").value + STATIC_CONTEXT + hindi + demoContext() }];
   for (const m of messages) {
     if (typeof m.content === "string") { out.push({ role: m.role, content: m.content }); continue; }
     if (m.role === "assistant") {
@@ -889,7 +891,7 @@ async function openModel(messages, signal, model = $("oModel").value.trim()) {
       r = await fetchT(base + "/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(key ? { "Authorization": "Bearer " + key } : {}) }, // a local server needs no key
-        body: JSON.stringify({ model, max_tokens: 2000, messages: toOpenMessages(messages), // room for a thinking model: its silent reasoning counts against the limit, and a low limit left the answer empty
+        body: JSON.stringify({ model, max_tokens: 2000, temperature: 0.2, messages: toOpenMessages(messages), // low temperature: steadier wording and fewer spelling slips // room for a thinking model: its silent reasoning counts against the limit, and a low limit left the answer empty
           ...(/openrouter\.ai/.test(base) ? { reasoning: { effort: "low" } } : {}), // [UNVERIFIED] OpenRouter's switch for less silent reasoning, for speed; not sent to other servers
           tools: TOOLS.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.input_schema } })) }),
       }, 60000, signal);
