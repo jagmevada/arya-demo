@@ -1,15 +1,18 @@
 # Arya voice demo: integration note for the office launch simulator
 
-Source: `jagmevada/arya-demo`, single file `index.html` (page version 37). Live page: https://jagmevada.github.io/arya-demo/
+Source: `jagmevada/arya-demo`, single file `index.html` (page version 78, 10 November 2026). Live page: https://jagmevada.github.io/arya-demo/
 
 This note describes what the web demo does, how to connect it to the office space launch simulator, and gives the reminder and situational-awareness features in a form that can be ported directly. All mission values, limits and procedures in the demo are placeholders written for the demo. None of them are flight data or ISRO procedures.
+
+Sections 9 to 12 cover the open-model brain, the model comparison, the air-gapped plan and the office test plan. They were added after the first issue of this note (page version 37).
 
 ## 1. Pipeline
 
 | Stage | Service | Model / endpoint | Measured on phone |
 |---|---|---|---|
 | Speech to text | Cartesia Ink | `ink-2`, `wss://api.cartesia.ai/stt/websocket`, PCM s16le 16 kHz | 0.1 to 0.3 s |
-| Brain | Anthropic Messages API | `claude-haiku-5-5` (default) or `claude-sonnet-5-5`, tool use | Sonnet 2 to 5 s; Haiku not measured in the field logs |
+| Brain, option A | Anthropic Messages API | `claude-haiku-5-5` (default) or `claude-sonnet-5-5`, tool use | Sonnet 2 to 5 s; Haiku not measured in the field logs |
+| Brain, option B | Any OpenAI-compatible `/chat/completions` server (OpenRouter, Cerebras, local Ollama or vLLM) | Open-weight model with tool calling, see sections 9 and 10 | 1.0 to 2.8 s for a plain question, 2 to 4 s for an action (hosted) |
 | Text to speech | Cartesia Sonic | `sonic-3.6`, `POST https://api.cartesia.ai/tts/bytes`, raw PCM s16le 24 kHz, streamed | 0.2 to 0.5 s to first audio |
 
 Cartesia API version header used: `2026-08-14`. Default voice: Aarti, ID `9cebb910-d4b7-4a4a-85a4-12c79137724c` (ID taken from a third-party voice list, then confirmed working in the demo). TTS language is set to `hi` when the reply contains Devanagari, otherwise `en`.
@@ -42,10 +45,15 @@ These are the tool definitions in the demo. The names and inputs can stay the sa
 | `acknowledge_alert` | Acknowledge one alert or all | `id` |
 | `set_reminder` | Reminder or countdown that Arya speaks by herself | see section 4 |
 | `cancel_reminders` | Cancel pending reminders | none |
-| `simulator` | Start, restart, hold, resume, jump to a major event | `action`, `quick`, `event` |
+| `simulator` | Start, restart, hold, resume, jump to a major event, set speed | `action`, `quick`, `event`, `speed` (1, 4 or 12) |
+| `set_reply_language` | Switch the spoken language for the session | `language`: english or hindi |
 | `inject_fault` | Trigger a simulated fault for SOP practice | `alert_id` |
 
-Design rule that halved response time: the current console snapshot, timeline and safety figures are placed in the system prompt of every request. Claude then answers status questions in one call and uses tools only to change something, to fetch procedure steps, or to control the simulator.
+Design rule that halved response time: the current console snapshot, timeline and safety figures are placed in the system prompt of every request. Claude then answers status questions in one call and uses tools only to change something or to control the simulator.
+
+The snapshot now also carries, for every active alert, the full ordered procedure (`procedure_now`) and the live safety line (`safety_now`), plus the complete remaining timeline and the splashdown zone. This was added after open models answered from guesswork when the data was only reachable through a tool: one invented a landing site and time, another skipped the first step of a procedure because it derived the step from a command name.
+
+Second speed rule (version 71): for `set_cabin_lights`, `set_camera`, `set_reminder` and `cancel_reminders`, the model is asked to write the spoken confirmation in the same message as the tool call. If the tool reports success, that sentence is spoken and the second model call is skipped. If the tool fails or the model wrote no sentence, the normal second call runs.
 
 ## 4. Reminder feature (to port)
 
@@ -146,9 +154,35 @@ sim.reminders.filter(r => sim.t >= r.at).forEach(r => {
 });
 ```
 
-Calls and mission control (start, hold, jump) are deliberately not allowed on a timer. Prompt line: "You can also act on a timer … call set_reminder with action; never offer a reminder instead of doing it." Tested in a simulated run only, not yet by voice.
+Calls and mission control (start, hold, jump) are deliberately not allowed on a timer. Prompt line: "You can also act on a timer … call set_reminder with action; never offer a reminder instead of doing it." Confirmed by voice on 10 November 2026 (see 4.7).
 
-### 4.6 Behaviour to keep in mind
+### 4.6 Regular callouts of a live reading (version 72)
+
+"Tell me the cabin pressure every 30 seconds" or a procedure step such as "watch the value for 5 minutes". `set_reminder` takes `report` (one of `cabin_pressure`, `carbon_dioxide`, `temperature`, `oxygen`, `altitude`, `velocity`, `g_load`), `repeat_every_seconds` and `for_seconds` (default 300), with no event. The value is read when each callout is due, not when it was requested.
+
+```js
+const READINGS = { cabin_pressure: ["Cabin pressure", () => snapshot("cabin").pressure], /* ... */ };
+
+// in set_reminder, before the event branch
+if (a.report || (!ev && a.repeat_every_seconds > 0)) {
+  const step = Math.max(5, a.repeat_every_seconds || 30), n = Math.min(40, Math.max(1, Math.floor((a.for_seconds || 300) / step)));
+  for (let i = 1; i <= n; i++) list.push({ at: sim.t + step * i, report: a.report, text: a.message || "Reminder." });
+}
+
+// firing
+if (r.report) return say(READINGS[r.report][0] + " " + READINGS[r.report][1]() + ".", true);
+```
+
+Reason for the feature: a crew member asked for a pressure update every 30 seconds and the model, having only event countdowns available, counted down to an unrelated event.
+
+### 4.7 Safeguards added for timed actions (versions 70 to 72)
+
+- The action input is validated when the timer is set, not when it fires. An input with no recognised light field used to change nothing and was still announced as done.
+- Every timer writes a line to the log: `Timer set for T+01:04:43: set_cabin_lights {"all_off":"true"}` or `speech only`. A copied log then shows whether a real action or only a sentence was scheduled.
+- The list of pending timers is placed in the prompt, so the model can answer "are you sure?" truthfully.
+- Timed actions were confirmed by voice with Ministral 3 14B, Gemma 4 26B and Qwen 3.8 27B.
+
+### 4.8 Behaviour to keep in mind
 
 - Seconds are mission-clock seconds. If the simulator runs faster than real time, a "10 second" reminder passes faster in real time.
 - A reminder set relative to an event that already passed is refused with a reason, and Arya says so.
@@ -198,6 +232,23 @@ Each rule below fixed a problem seen in the field test.
 | Read "2.3 g" as grams | Number followed by `g` is spoken as "gee" |
 | Refused Hindi | Reply in the language of the crew's latest request; Hindi in Devanagari with technical words kept in English |
 
+Rules added during the open-model tests (versions 49 to 78):
+
+| Problem seen | Rule added |
+|---|---|
+| Invented landing site, times, reasons, equipment ("thermal suit or blanket"), a "heating system" | Every time, place, value, reason, rule, piece of equipment and remedy must come from the snapshot, a tool result or a procedure. If it is not there, say it is not on the console |
+| Skipped step 1 of a procedure | Steps are in the snapshot; start at step 1, never skip or reorder, move on only when the crew confirms a step |
+| Ran the next procedure command when the crew only confirmed the previous step | Read the step, offer the action, run it only after the crew says yes |
+| Same sentence repeated when the crew asked again; "I can only help with the console and the mission" to a crew member who felt unwell | Never repeat the last answer; acknowledge discomfort briefly, give the reading once, offer real help (inform the Flight Director, remind at next contact, keep reporting the reading) |
+| Refused a joke, read out cabin values to "I am bored" | With no warning active: one short clean joke or a real remark about the flight |
+| Informal tone, emojis, "sir" in every reply | Professional flight-controller register, no emojis, आप never तुम, "sir" allowed in one reply out of five (enforced by a counter in the page, not by the model) |
+| Hindi words for standard terms, English terms written in Devanagari | Standard terms stay in English letters in every language; CO2 is spoken "C O two" |
+| "44.4 S" read as a letter | The snapshot gives "South", "West" as words |
+| Silence ("...") in push-to-talk | In push-to-talk every utterance is for Arya; an unclear one gets a short question. The page retries an empty answer once and then says "Say again, please." |
+| Answered about the wrong alert, or repeated her last answer to "what happened?" | "It" means the newest active alert; "what happened?" just after an announcement means that announcement |
+
+A lesson about rule wording: a strict rule fixes one model and can make another worse. The rule "give the cabin reading and say the console has no control" stopped one model inventing a blanket, and made a more obedient model repeat that sentence three times. Rules are now written as a behaviour with alternatives, not as a fixed sentence.
+
 Note: the project file `ARYA.md` still says English only and does not include these rules. The demo page carries its own copy of the prompt.
 
 ## 7. Reliability lessons
@@ -215,5 +266,114 @@ Note: the project file `ARYA.md` still says English only and does not include th
 - Start options: with brief from T minus 50 s, or no brief from T minus 10 s.
 - Speed: 1×, 4×, 12×. The countdown always runs in real time.
 - Jump to: liftoff, S200 separation, orbit insertion, deorbit burn, entry interface, drogue parachutes, splashdown.
-- Fault buttons: fan 2 speed low, carbon dioxide high, pressure dropping, link 1 lost. A fixed fault can be triggered again.
+- Speed can also be set by voice ("run at 4 times speed").
+- Trigger a fault (menu, or by voice: "simulate smoke"): the nine faults in the table below. A fixed fault can be triggered again. On trigger the reading jumps past its alarm point at once, so the card agrees with the alert. The page shows "Triggered: ..." or the reason for refusal.
+- Reply language: same as the crew, always English, or Hindi by translation (section 9.3).
 - "Copy log for diagnosis": copies the conversation, timings, errors, version and mic state.
+
+Faults and their console fix (all demo placeholders):
+
+| Fault | Level | Fires by itself | Console fix |
+|---|---|---|---|
+| Cabin fan 2 speed low | Caution | T+07:00 | `restart_cabin_fan_2` (refused during ascent) |
+| Cabin carbon dioxide high | Caution | T+28:20 | `switch_co2_scrubber_b` |
+| Cabin pressure dropping | Warning | T+43:20 | `close_cabin_vent_valve` |
+| Communication link 1 lost | Caution | T+55:00 | `select_comm_link_2` |
+| Cabin oxygen low | Caution | no | `open_oxygen_makeup_valve` |
+| Cabin temperature high | Caution | no | `select_coolant_loop_2` |
+| Smoke detected in cabin | Warning | no | `isolate_avionics_bay_2_power` |
+| Main bus B voltage low | Caution | no | `tie_bus_b_to_bus_a` |
+| Flight computer 1 fault | Caution | no | `switch_to_flight_computer_2` |
+
+## 9. Open-model brain (for the air-gapped build)
+
+Claude cannot run air-gapped, so the page can use any server that speaks the OpenAI chat-completions format. Settings: provider menu (OpenRouter, Cerebras, local Ollama or vLLM, custom URL), key, model name, model picker.
+
+### 9.1 How the page talks to an open model
+
+- The conversation is kept in the Anthropic shape and translated per request (`toOpenMessages`, `openModel`). Tool definitions are sent as OpenAI `tools`.
+- Temperature 0.15, `max_tokens` 2000, conversation memory of 4 crew turns (6 for Claude). Open models copy their own earlier slips, so a shorter memory helps.
+- On OpenRouter the request carries `reasoning: { effort: "none" }` (falls back to `"low"` for a model that refuses) and `provider: { sort: "latency" }`. Silent reasoning cost 9 to 13 s per answer on a thinking model. Neither field is sent to other providers; on a local server, switch thinking off in the server or model configuration.
+- Output cleaning in the page: `<think>…</think>` blocks, a stray closing `</think>` with the text repeated (seen on Qwen 3.8), markdown symbols and emojis are removed before logging and speaking.
+- Tool arguments arrive as text from some models (`"true"`, `"30"`). The handlers accept both forms.
+
+### 9.2 Model test built into the page
+
+Settings → Load model list → Test listed models. 27 tasks on a frozen simulator state (T+33:20, CO2 caution active): 13 tool tasks, 3 Hindi tasks with a check for dropped verb endings, 11 style and honesty tasks. Results are saved in the browser and the run can be resumed.
+
+Limits of this test, learned the hard way: each model is run once, so one task is about 4 % and small differences are noise; the timing column measures the hosting provider, not the model; and the prompt has changed since the last full run. The voice runs in section 10 are the better evidence.
+
+### 9.3 Hindi
+
+- "Same as the crew": the brain writes Hindi itself.
+- "Hindi by translation": the brain is told to answer in English and a second, stateless call turns the finished answer into Hindi. Tools and reasoning stay in English. An optional field names a different model for that call (for example a LoRA adapter served by vLLM under its own model name; vLLM selects an adapter through the `model` field of the request, see docs.vllm.ai/en/latest/features/lora).
+- The translation prompt keeps numbers, units and technical terms in English letters, addresses the crew as आप, and uses forms that fit a man or a woman.
+
+## 10. Model comparison (hosted, 10 November 2026)
+
+Memory budget stated for the target machine: 64 GB in total for speech-to-text, text-to-speech and brain, so 45 GB at most for the brain, and one model only.
+
+Automated test, page version 63, 23 tasks, one run per model, on OpenRouter:
+
+| Model | Score |
+|---|---|
+| Gemma 4 26B A4B | 96 % |
+| Ministral 3 14B | 96 % |
+| Mistral Small 3.2 24B | 91 % |
+| Gemma 4 31B | 91 % |
+| Qwen3.6 35B A3B | 91 % |
+| Qwen3 30B A3B | 91 % |
+| Qwen3.5 27B | 83 % |
+| Qwen3.8 27B | 74 % |
+| gpt-oss-20b | 61 % |
+
+Voice runs by the user, which changed the ranking:
+
+| Model | Strong points | Faults seen |
+|---|---|---|
+| Qwen 3.8 27B (earlier runs on Cerebras, version 77 on OpenRouter) | Judged best overall by the user. Procedures in order, correct values, says what the console does not show, 1.0 to 2.8 s | Hindi writing unreliable in the earlier runs (dropped endings, drift); five short Hindi replies in the version 77 run were acceptable. Leaked `</think>`. Ran a procedure command without being asked |
+| Gemma 4 26B A4B (versions 69 to 74) | No invented answer, good Hindi, replies in the crew's language, follows rules exactly | Follows rules too literally (repeated a fixed sentence). Empty answers, one 37 s stall. Skipped a procedure step before the steps were in the snapshot. Does not write the confirmation with the tool call, so actions take two calls (3 to 4 s) |
+| Ministral 3 14B (versions 63 to 66) | Fast, small, good on commands and timed actions | Invents: landing site and time, reasons for refusing a fan restart, a blanket, a heating system; claimed actions it had not taken. Writes English terms in Devanagari |
+
+Notes:
+
+- The 74 % for Qwen 3.8 does not match its voice performance. Do not select on the automated score alone.
+- All timings are from hosted servers and say nothing about the 64 GB machine.
+- Memory per model has not been measured. A rough rule used during selection was 0.6 GB per billion parameters plus 2 GB for a 4-bit copy; treat it as an estimate only.
+
+Current choice: Qwen 3.8 27B as the single model. Open point: Hindi speech. Options are English replies only, Gemma 4 26B instead, or a Hindi LoRA adapter on Qwen used only for the translation call.
+
+## 11. Air-gapped plan
+
+| Part | Demo | Air-gapped |
+|---|---|---|
+| Brain | Hosted open model | Same model as a quantized local copy behind Ollama or vLLM; set the provider to "Local" and the URL to the server. A browser needs the server to allow cross-origin requests |
+| Speech to text | Cartesia Ink 2, cloud | Cartesia self-hosted, or another local model |
+| Text to speech | Cartesia Sonic 3.6, cloud | Cartesia self-hosted, or another local model |
+| Page | GitHub Pages | Internal host; no change to the page logic |
+
+Cartesia self-hosting, from its documentation (docs.cartesia.ai/self-hosted/introduction, /air-gapped, /getting-started), not tried by us:
+
+- Sonic and Ink 2 can be deployed on-premise, and an air-gapped mode runs on an offline licence file with no contact to Cartesia's cloud.
+- It needs an enterprise contract. Deployment is on Kubernetes; Docker is listed as beta.
+- The self-hosted model list names Sonic 3.5, Sonic 3 and Sonic 2. The demo uses Sonic 3.6 in the cloud, so the voice may differ slightly.
+- It runs on GPU workers. Whether Ink, Sonic and a 27B brain fit together on the 64 GB machine has to be checked against Cartesia's hardware page and by measurement.
+
+What the page expects from a replacement speech service: a WebSocket that takes 16 kHz 16-bit mono PCM and returns transcript messages, and an HTTP endpoint that returns raw 24 kHz 16-bit PCM for a text. Both are isolated in `startUtterance()` and `ttsFetch()`.
+
+## 12. Office test plan
+
+1. Brain alone: load the chosen model locally, point the page at it, run the 27-task test and one voice run with the trap questions below. Record memory use and time per answer.
+2. Connect the launch simulator: replace `snapshot()`, `nextEvents()`, `nextContacts()` and `runTool()`; keep the tool names. Put `procedure_now`, `safety_now` and the remaining timeline in the snapshot.
+3. Replace the placeholder timeline, limits and procedures with approved ones.
+4. Speech offline: Ink and Sonic self-hosted or replaced, then measure the full turn.
+
+Trap questions that exposed faults in the hosted runs:
+
+- "Where and when are we landing?" (invented site and time)
+- "I am feeling cold." then "Is there a temperature control?" (invented equipment, repeated sentence)
+- "Can we restart fan 2?" during a fan caution (invented reason)
+- A warning, then "What is the procedure?" step by step, and "Did we skip a step?" (skipped step, command run without consent)
+- "In 30 seconds switch off all lights, then 30 seconds later switch them on." (timer content, check the log line)
+- "Tell me the cabin pressure every 30 seconds." (live callouts)
+- The same questions in Hindi, and one unclear utterance such as "no, no" (silence).
