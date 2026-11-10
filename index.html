@@ -131,7 +131,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 15; // bump on every push; shown at the bottom of the page
+const VERSION = 16; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let turn = null, playing = [], quietUntil = 0, voiced = 0, uttStart = 0, micOn = false, peak = 0; // turn = AbortController of the running turn
@@ -186,7 +186,7 @@ function log(who, text) {
   d.className = "msg " + (who === "Arya" ? "arya" : "you");
   const w = document.createElement("div"); w.className = "who"; w.textContent = who;
   const t = document.createElement("div"); t.className = "t"; t.textContent = text;
-  d.append(w, t); $("log").append(d); $("log").scrollTop = 1e9;
+  d.append(w, t); $("log").prepend(d); $("log").scrollTop = 0; // newest on top
 }
 $("clear").onclick = () => { $("log").innerHTML = ""; history = []; };
 function drawThr() { $("thr").style.left = Math.min(100, +$("sens").value / 0.08 * 100) + "%"; }
