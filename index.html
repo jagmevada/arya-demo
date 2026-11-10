@@ -19,7 +19,7 @@
   .seg button.on { background:var(--acc); color:#000; font-weight:600; }
   #talk { align-self:center; width:180px; height:180px; border-radius:50%; font-size:18px; font-weight:600;
           border:3px solid var(--line); background:var(--panel); touch-action:none; user-select:none;
-          -webkit-user-select:none; -webkit-touch-callout:none; transition:all .15s; }
+          -webkit-user-select:none; -webkit-touch-callout:none; transition:all .15s; white-space:pre-line; }
   #talk.listening { border-color:var(--acc); background:#2a1a08; box-shadow:0 0 30px #ff8a1f55; }
   #talk.thinking { border-color:#6aa3ff; } #talk.speaking { border-color:var(--ok); }
   #status { text-align:center; color:var(--dim); min-height:1.4em; } #status.err { color:var(--err); }
@@ -131,9 +131,10 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 16; // bump on every push; shown at the bottom of the page
+const VERSION = 17; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
+let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
 let turn = null, playing = [], quietUntil = 0, voiced = 0, uttStart = 0, micOn = false, peak = 0; // turn = AbortController of the running turn
 
 // ---------- settings (localStorage, per browser) ----------
@@ -161,6 +162,7 @@ function setMode(m) {
   mode = m; store.set("mode", m);
   document.querySelectorAll("#mode button").forEach(b => b.classList.toggle("on", b.dataset.mode === m));
   if (utt) { utt.end().catch(() => {}); utt = null; }
+  latched = false;
   if (state === "idle" || state === "listening") setState("idle"); // never reopen the mic under a running turn
 }
 document.querySelectorAll("#mode button").forEach(b => b.onclick = () => setMode(b.dataset.mode));
@@ -174,11 +176,11 @@ function setState(s, msg) {
   t.className = s;
   t.textContent = {
     off: "Tap to start",
-    idle: mode === "ptt" ? "Hold to talk" : "Listening…",
-    listening: mode === "ptt" ? "Release to send" : "Hearing you…",
+    idle: mode === "ptt" ? "🔇 Mic muted\nTap or hold" : "Listening…",
+    listening: mode === "ptt" ? (latched ? "🎙 Mic live\nTap to send" : "🎙 Mic live\nRelease to send") : "Hearing you…",
     thinking: "Thinking…", speaking: "Tap to stop",
   }[s];
-  status(msg ?? (s === "idle" && mode === "always" ? 'Say "Arya, …" to talk to her.' : ""));
+  status(msg ?? (s === "idle" ? (mode === "always" ? 'Say "Arya, …" to talk to her.' : "Mic is muted. Tap to unmute, or hold while you speak.") : ""));
 }
 function status(msg, err) { $("status").textContent = msg; $("status").className = err ? "err" : ""; }
 function log(who, text) {
@@ -703,10 +705,13 @@ function onAudio(f32) {
   let sum = 0; for (let i = 0; i < f32.length; i++) sum += f32[i] * f32[i];
   const rms = Math.sqrt(sum / f32.length), loud = rms > +$("sens").value;
   peak = Math.max(peak, rms);
-  $("lvl").style.width = Math.min(100, rms / 0.08 * 100) + "%";
+  $("lvl").style.width = (mode === "ptt" && !utt ? 0 : Math.min(100, rms / 0.08 * 100)) + "%"; // flat meter = muted
   if (state !== "idle" && state !== "listening") { preroll = []; return; } // mic is closed while Arya thinks/speaks
   const pcm = toPcm16(f32);
-  if (mode === "ptt") { if (utt) utt.send(pcm); return; }
+  if (mode === "ptt") {
+    if (utt) { utt.send(pcm); if (latched && performance.now() - pressAt > 60000) { latched = false; finishTurn(); } } // forgotten open mic sends after 60 s
+    return;
+  }
   const now = performance.now();
   if (!utt) {
     if (now < quietUntil) return; // let the room go quiet after Arya's own voice
@@ -787,7 +792,7 @@ $("test").onclick = async () => {
 
 // ---------- button ----------
 const talk = $("talk");
-let pressAt = 0, starting = false, stopped = false;
+let starting = false, stopped = false;
 talk.addEventListener("contextmenu", e => e.preventDefault());
 talk.addEventListener("pointerdown", async e => {
   e.preventDefault();
@@ -800,6 +805,7 @@ talk.addEventListener("pointerdown", async e => {
     starting = false;
     return;
   }
+  if (mode === "ptt" && state === "listening" && latched) { latched = false; finishTurn(); return; } // second tap: mute and send
   stopped = false;
   if (state === "speaking" || state === "thinking") { // the crew overrides Arya
     interrupt(); stopped = true;
@@ -808,15 +814,15 @@ talk.addEventListener("pointerdown", async e => {
   }
   if (mode === "ptt" && state === "idle") {
     try { talk.setPointerCapture(e.pointerId); } catch {}
-    pressAt = performance.now(); utt = startUtterance([]); setState("listening");
+    pressAt = performance.now(); latched = false; utt = startUtterance([]); setState("listening");
   }
 });
 const release = () => {
   if (mode !== "ptt" || state !== "listening") return;
-  if (performance.now() - pressAt < 350) { // a tap, not speech
-    utt?.end().catch(() => {}); utt = null;
-    setState("idle", stopped ? "Stopped." : "Hold the button while you speak.");
-  } else finishTurn();
+  if (latched) return;
+  if (performance.now() - pressAt >= 350) { finishTurn(); return; } // held: release sends
+  if (stopped) { utt?.end().catch(() => {}); utt = null; setState("idle", "Stopped."); return; } // that tap was only to stop Arya
+  latched = true; setState("listening", "Mic is live. Tap again to mute and send."); // a tap unmutes
 };
 talk.addEventListener("pointerup", release);
 talk.addEventListener("pointercancel", release);
