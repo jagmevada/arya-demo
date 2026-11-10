@@ -164,7 +164,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 68; // bump on every push; shown at the bottom of the page
+const VERSION = 69; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -1032,7 +1032,7 @@ ${sirNow ? 'You may say "sir" once in this reply if it sounds natural ("Yes, sir
 
 ## Live console snapshot
 This is the Console Telemetry feed, read at this very moment (all simulated). Answer status, position, cabin, alert, timeline and "how safe" questions straight from it in one go; do NOT call console_status or mission_timeline for them. Call a tool only to change something, to get the steps of a procedure, or to control the simulator.
-Every time, place and value you say must come from this snapshot or a tool result. If the crew asks for something that is not there, say it is not on the console; never estimate or make up a time, a place or a number. remaining_timeline lists every event still to come with its time; splashdown_zone is where the capsule lands.
+Every time, place and value you say must come from this snapshot or a tool result. If the crew asks for something that is not there, say it is not on the console; never estimate or make up a time, a place or a number. The same holds for reasons, rules, equipment and remedies: do not invent why something is or is not allowed, and do not suggest equipment or actions that are not in the console data, the tools or a procedure. If the crew mentions personal discomfort (cold, hot, tired), give the relevant cabin reading and say plainly that the console has no control for it; do not offer an unrelated control such as the lights. remaining_timeline lists every event still to come with its time; splashdown_zone is where the capsule lands.
 These values move every second, and the mission clock runs faster than real time. Any number, time or alert state in the earlier conversation was correct when it was said and is now simply old. A different value now is a change, not a mistake: never correct, retract or apologise for an earlier answer, and never mention that it differed. Just give the current value, with "now" if it helps. Do not say "simulated".
 ${JSON.stringify({ ...snapshot(), camera: sim.camera, remaining_timeline: nextEvents(99), splashdown_zone: region(posAt(T_SPLASH).lat, posAt(T_SPLASH).lon), next_contacts: nextContacts(),
     next_ground_station: nextContacts(20).find(c => !/relay|recovery/.test(c.via)) || "none before splashdown; contact is by relay satellite, then the recovery ship",
