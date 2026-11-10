@@ -101,6 +101,8 @@
         <option value="claude-sonnet-5-5">claude-sonnet-5-5</option>
         <option value="claude-opus-5-5">claude-opus-5-5</option>
       </select></label>
+    <label>Reply language
+      <select id="replyLang"><option value="auto">Same as the crew (Hindi or English)</option><option value="en">Always English (Hindi is still understood)</option></select></label>
     <label>Sonic voice ID (Indian-accent English)<input id="voice" autocomplete="off"></label>
     <div class="hint">Default: Aarti (Indian-accent female). Pick any voice ID from play.cartesia.ai and paste it here.</div>
     <label>Pronunciation list (WRITTEN=spoken, one per line)<textarea id="lex" style="min-height:120px"></textarea></label>
@@ -161,7 +163,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 53; // bump on every push; shown at the bottom of the page
+const VERSION = 54; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -175,7 +177,7 @@ const store = {
 const aryaDefault = $("aryaDefault").textContent.trim();
 const LEX_DEFAULT = "ISTRAC=Estrack\nISRO=Isro\nSHAR=Shaar\nSAC=Sack\nMOX=Mox\nNavIC=Navik\nHLVM3=H L V M 3\nLVM3=L V M 3\nkPa=kilopascal";
 const KEYTERMS = ["Arya", "ISTRAC", "ISRO", "Sriharikota", "HLVM3", "Bengaluru", "Port Blair", "splashdown", "deorbit", "scrubber", "visor", "acknowledge", "caution"]; // helps Ink hear these words
-const fields = { oPrice:"", brain:"claude", oUrl:"https://openrouter.ai/api/v1", oKey:"", oModel:"", cKey:"", aKey:"", model:"claude-haiku-5-5", voice:DEFAULT_VOICE, sens:"0.015", silence:"900", prompt:aryaDefault, lex:LEX_DEFAULT };
+const fields = { replyLang:"auto", oPrice:"", brain:"claude", oUrl:"https://openrouter.ai/api/v1", oKey:"", oModel:"", cKey:"", aKey:"", model:"claude-haiku-5-5", voice:DEFAULT_VOICE, sens:"0.015", silence:"900", prompt:aryaDefault, lex:LEX_DEFAULT };
 for (const [k, d] of Object.entries(fields)) {
   $(k).value = store.get(k, d);
   $(k).addEventListener("input", () => {
@@ -846,6 +848,7 @@ The crew is busy with their hands and eyes. Keep them aware with the fewest word
 - When the crew asks what to do about a caution or warning, call get_sop. Say only the next step, in one or two sentences, then wait until the crew says it is done before you give the following step. The first time, say once that it is a demo procedure.
 - When the crew asks how safe it is, or how much time they have, answer from safety_now in get_sop: the value, its limit and the trend.
 - Use console_command only when the crew asks for that action or says yes to it. If it answers done false, say why nothing changed.
+- When the step you just gave is the one that fix_command performs (close the vent valve, switch the scrubber, select link 2, restart the fan) and the crew says it is done ("done", "बंद कर दिया", "हो गया"), call console_command for it straight away so the console shows it, then give the next step.
 - For a warning, give the first step straight away without being asked twice.
 
 ## ISRO terms
@@ -868,7 +871,7 @@ You can also remind and count down: when the crew asks "remind me when…", "tel
 You recently said aloud, on your own: ${sim.said.map(t => '"' + t + '"').join(" ") || "nothing"}. If the crew answers one of these (for example "confirmed" or "yes, done"), acknowledge it in a few words.
 Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to you, even without your name." : "always listening — follow the When to speak rules strictly."}
 
-## Sir in this reply
+${$("replyLang").value === "en" ? '## Reply language (overrides the Language rules above)\nAlways reply in English, in every reply, even when the crew speaks Hindi. You still understand Hindi fully and act on it.\n\n' : ""}## Sir in this reply
 ${sirNow ? 'You may say "sir" once in this reply if it sounds natural ("Yes, sir", "जी sir").' : 'Do NOT say "sir" (or "सर") anywhere in this reply.'}
 
 ## Live console snapshot
@@ -959,7 +962,8 @@ async function think(userText, signal) {
   if (openBrain() ? !$("oUrl").value.trim() || !brainModel() : !$("aKey").value.trim())
     throw new Error(openBrain() ? "Enter the open model's URL and model name in Settings." : "Enter your Anthropic API key in Settings.");
   const turns = history.flatMap((m, i) => m.role === "user" && typeof m.content === "string" ? [i] : []);
-  if (turns.length > 6) history = history.slice(turns[turns.length - 6]); // ponytail: keep last 6 turns, cut only at turn starts
+  const keep = openBrain() ? 4 : 6; // open models copy their own earlier slips, so they get a shorter memory
+  if (turns.length > keep) history = history.slice(turns[turns.length - keep]); // ponytail: short rolling memory, cut only at turn starts
   const start = history.length;
   history.push({ role: "user", content: "[mission clock " + clock(sim.t) + "] " + userText }); // the stamp shows Claude that time has moved since older turns
   claudeCalls = 0;
