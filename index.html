@@ -82,6 +82,7 @@
     <div class="row"><button id="resetPrompt">Reset prompt to default</button></div>
     <div class="hint">Keys are saved only in this browser (localStorage). Nothing is stored in the page code.</div>
   </details>
+  <div class="hint" id="ver" style="text-align:center"></div>
 </main>
 
 <script type="text/plain" id="aryaDefault"># Arya: the crew console's voice assistant
@@ -130,6 +131,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
+const VERSION = 15; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let turn = null, playing = [], quietUntil = 0, voiced = 0, uttStart = 0, micOn = false, peak = 0; // turn = AbortController of the running turn
@@ -152,6 +154,7 @@ for (const [k, d] of Object.entries(fields)) {
 }
 $("resetPrompt").onclick = () => { $("prompt").value = aryaDefault; try { localStorage.removeItem("arya.prompt"); } catch {} };
 if (!$("cKey").value || !$("aKey").value) $("settings").open = true;
+$("ver").textContent = "Arya demo · version " + VERSION + " · all mission data simulated";
 
 let mode = store.get("mode", "ptt");
 function setMode(m) {
@@ -755,7 +758,7 @@ $("test").onclick = async () => {
   const ac = turn = new AbortController();
   try {
     try { ctx ||= new (window.AudioContext || window.webkitAudioContext)(); await ctx.resume(); } catch {}
-    log("Test", "Page version 14. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
+    log("Test", "Page version " + VERSION + ". Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
     const micOk = await step("Microphone access", async () => { await startAudio(); return "allowed"; });
     setState("thinking", "Running test… (tap the button to cancel)"); // keeps the mic from starting a turn during the test
     if (micOk) await step("Microphone sound", async () => {
