@@ -163,7 +163,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 54; // bump on every push; shown at the bottom of the page
+const VERSION = 55; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -653,7 +653,7 @@ function jumpTo(name) { // move the mission clock to just before a major event, 
   return { done: true, mission_clock: clock(sim.t), next: name, note: "You will announce the jump aloud by yourself; reply with two or three words only." };
 }
 for (const n of JUMPS) { const o = document.createElement("option"); o.value = n; o.textContent = n[0].toUpperCase() + n.slice(1); $("simJump").append(o); }
-$("simJump").onchange = () => { const n = $("simJump").value; $("simJump").value = ""; if (n) { history = []; jumpTo(n); renderHud(); } };
+$("simJump").onchange = () => { wakeAudio(); const n = $("simJump").value; $("simJump").value = ""; if (n) { history = []; jumpTo(n); renderHud(); } };
 const COMMANDS = Object.values(ANOM).map(a => a.fix);
 // Plain words for what a timed action just did, built from the real result, for when the model gave no sentence of its own
 function describeAction(run, res) {
@@ -1260,7 +1260,10 @@ document.addEventListener("pointerdown", wakeAudio, true); // any tap on the pag
 talk.addEventListener("pointerdown", async e => {
   e.preventDefault();
   const waking = wakeAudio();
-  if (waking && state !== "off") await waking; // audio was asleep: wake it before recording, or the turn gets no sound
+  if (waking && state !== "off") { // audio was asleep (a menu or another app paused it): wake it and wait for the mic to deliver again, or the turn gets no sound
+    await waking;
+    for (let i = 0; i < 12 && performance.now() - lastAudioAt > 300; i++) await sleep(100);
+  }
   if (state === "off") {
     if (starting) return;
     starting = true; status("Starting…");
