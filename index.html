@@ -58,6 +58,8 @@
 
   <div class="hudbar"><span>Mission (simulated)</span><div>
     <select id="simSpeed" title="Simulator speed"><option value="1">1× real time</option><option value="4" selected>4× (30 min mission)</option><option value="12">12× (10 min)</option></select>
+    <select id="simFrom" title="Where the mission starts"><option value="brief">Brief, T−50 s</option><option value="quick">No brief, T−10 s</option></select>
+    <select id="simJump" title="Jump to a major event"><option value="">Jump to…</option></select>
     <button id="simPause" hidden>❚❚ Hold</button> <button id="simStart">▶ Start mission</button></div></div>
   <div id="hud"></div>
   <div class="hudbar"><span>Trigger a fault</span><div id="faults"></div></div>
@@ -127,7 +129,7 @@ For anything unrelated to spaceflight and this mission (news, entertainment, per
 - To change something (lights, cameras, calls), call the tool straight away; it reads the console itself.
 - Before you **call** someone, **hang up**, **end all calls** or **reject** a call, say who and wait for a "yes".
 - If a tool answers done false, say what did not change. Never say it worked.
-- Start, restart, hold or resume the simulated mission only when the crew asks, with the simulator tool. Never change its speed or jump in time.
+- Start, restart, hold, resume or jump the simulated mission only when the crew asks, with the simulator tool. Never change its speed.
 </script>
 
 <script>
@@ -137,7 +139,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 34; // bump on every push; shown at the bottom of the page
+const VERSION = 36; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -368,14 +370,15 @@ const ESCALATE = [ // [fault, test, what to say] — spoken once each time the v
 ];
 const REMIND_MS = 75000; // repeat an unacknowledged alert this often (real time)
 let sim;
-function simRestart(running) {
+function simRestart(running, quick = $("simFrom").value === "quick") { // quick = start at T-10 s and skip the mission brief
   sim = {
-    t: T_START, last: Date.now(), envLast: 0, acc: 0, running, speed: +$("simSpeed").value || 4,
+    started: running, t: quick ? -10 : T_START, last: Date.now(), envLast: 0, acc: 0, running, speed: +$("simSpeed").value || 4,
     env: { temp: 22.1, press: 101.3, hum: 46, o2: 20.9, co2: 0.30 }, rate: { co2: 0, press: 0 },
     alerts: [], fired: new Set(), fixed: new Set(), announce: [], said: [], reminders: [],
     lights: { spots: [true, false], zones: [true, true, true, true, false, false], dim: 70 },
     camera: "cabin wide", call: null, link: "Sriharikota",
   };
+  if (quick) sim.fired.add("mission brief");
 }
 const fmtDur = s => { s = Math.max(0, Math.round(s)); if (s < 90) return s + " s"; const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
   return (d ? d + " d " : "") + (d || h ? h + " h " : "") + m + " min"; };
@@ -446,6 +449,7 @@ const walk = (v, target, k, noise, lo, hi) => Math.min(hi, Math.max(lo, v + (tar
 function say(text, keep, urgent, valid) { sim.announce[urgent ? "unshift" : "push"]({ text, at: Date.now(), keep, valid }); sim.said.push(text); if (sim.said.length > 8) sim.said.shift(); }
 function simTick() {
   // The clock waits while a mission event is still queued to be spoken, so Arya's words and the clock stay together.
+  if (ctx && sim.t < -6 && $("cKey").value) prepCount(); // also while on hold, so the count is ready for a quick start
   sim.announce = sim.announce.filter(a => !a.valid || a.valid());
   const waiting = ctx && sim.announce.some(a => a.keep);
   const now = Date.now(), dtm = sim.running && !waiting ? Math.min((now - sim.last) / 1000, 2) * (sim.t < 0 ? 1 : sim.speed) : 0;
@@ -453,7 +457,6 @@ function simTick() {
   if (!sim.running) return;
   sim.t = Math.min(sim.t + dtm, T_END);
   for (const [t, name, text] of MILESTONES) if (sim.t >= t && !sim.fired.has(name)) { sim.fired.add(name); if (text) say(typeof text === "function" ? text() : text, !/callout|status/.test(name)); if (name === "final count") sim.announce[sim.announce.length - 1].play = playCount; }
-  if (ctx && sim.t < -6 && $("cKey").value) prepCount(); // mission events are always spoken; only extra callouts may be skipped
   const link = contactNow(); // signal gained or lost is an event too
   if (!link !== !sim.link && sim.t > 0 && sim.t < T_SPLASH && !active("COMM1_LOSS")) say(link ? "Acquisition of signal, " + link + "." : "Loss of signal.", false);
   sim.link = link;
@@ -505,6 +508,23 @@ function snapshot(section) {
   };
   return section && all[section] ? all[section] : all;
 }
+const JUMPS = ["liftoff", "S200 separation", "orbit insertion", "deorbit burn", "entry interface", "drogue parachutes", "splashdown"];
+function jumpTo(name) { // move the mission clock to just before a major event, by the page control or by voice
+  const ev = MILESTONES.find(m => m[1] === name);
+  if (!ev || !JUMPS.includes(name)) return { done: false, reason: "unknown event", events: JUMPS };
+  const keep = { lights: sim.lights, camera: sim.camera };
+  simRestart(true, true);
+  Object.assign(sim, keep);
+  sim.t = name === "liftoff" ? -10 : ev[0] - 15 * sim.speed; // about 15 real seconds before the event
+  MILESTONES.forEach(m => { if (m[0] < sim.t) sim.fired.add(m[1]); }); // earlier events count as done, silently
+  Object.entries(ANOM).forEach(([id, a]) => { if (a.t < sim.t) { sim.fired.add(id); sim.fixed.add(id); } }); // earlier faults count as fixed
+  sim.link = contactNow();
+  if (name !== "liftoff") say("Mission clock moved to " + (sim.t < 0 ? "T minus " : "T plus ") + fmtDur(Math.abs(sim.t)) + ". " + name[0].toUpperCase() + name.slice(1) + " in " + fmtDur(ev[0] - sim.t) + ".", true);
+  log("Sim", "Jumped to " + clock(sim.t) + ", just before " + name + ".");
+  return { done: true, mission_clock: clock(sim.t), next: name, note: "You will announce the jump aloud by yourself; reply with two or three words only." };
+}
+for (const n of JUMPS) { const o = document.createElement("option"); o.value = n; o.textContent = n[0].toUpperCase() + n.slice(1); $("simJump").append(o); }
+$("simJump").onchange = () => { const n = $("simJump").value; $("simJump").value = ""; if (n) { history = []; jumpTo(n); renderHud(); } };
 const COMMANDS = Object.values(ANOM).map(a => a.fix);
 function injectFault(id) { // fire a fault now, by button or by voice; a fixed fault can be fired again
   if (!ANOM[id]) return { done: false, reason: "unknown fault", faults: Object.keys(ANOM) };
@@ -537,8 +557,8 @@ const TOOLS = [
   { name: "set_camera", description: "Switch the camera preview view.", input_schema: { type: "object", properties: { view: { type: "string", enum: CAMERAS } }, required: ["view"] } },
   { name: "video_call", description: "Call a contact or hang up. Only call after the crew said yes.",
     input_schema: { type: "object", properties: { action: { type: "string", enum: ["call", "hang_up"] }, contact: { type: "string", enum: CONTACTS } }, required: ["action"] } },
-  { name: "simulator", description: "Control the simulated mission on the crew's request: start (or restart) from T minus 50 seconds, hold the clock, or resume it.",
-    input_schema: { type: "object", properties: { action: { type: "string", enum: ["start", "restart", "hold", "resume"] } }, required: ["action"] } },
+  { name: "simulator", description: "Control the simulated mission on the crew's request: start or restart it, hold the clock, or resume it. quick=true starts at T minus 10 seconds with no mission brief (\"quick start\", \"skip the brief\", \"start from T minus 10\"); quick=false starts at T minus 50 seconds with the brief; leave it out to use the setting on the page. action=jump with event moves the clock to just before that major event (\"jump to re-entry\", \"go to orbit insertion\"); re-entry is the event \"entry interface\".",
+    input_schema: { type: "object", properties: { action: { type: "string", enum: ["start", "restart", "hold", "resume", "jump"] }, quick: { type: "boolean" }, event: { type: "string", enum: JUMPS } }, required: ["action"] } },
   { name: "set_reminder", description: "Make yourself speak a reminder later, without being asked again. Either give event + seconds_before (\"remind me 10 seconds before orbit insertion\"), or in_seconds from now (\"remind me in 2 minutes to check the valve\"). With event + repeat_every_seconds you count down aloud at that interval until the event. Seconds are mission-clock seconds. message is the exact words you will say then, in the crew's language; leave it out for a countdown.",
     input_schema: { type: "object", properties: { event: { type: "string", enum: MILESTONES.map(m => m[1]).filter(n => !/callout|status|final count|mission brief/.test(n)) },
       seconds_before: { type: "number" }, in_seconds: { type: "number" }, repeat_every_seconds: { type: "number" }, message: { type: "string" } } } },
@@ -595,11 +615,12 @@ function runTool(name, a) {
       return { done: true, reminders_set: list.length, first_in: fmtDur(list[0].at - sim.t), note: "You will speak them by yourself; confirm in a few words." };
     }
     case "simulator":
-      if (a.action === "start" && (sim.running || sim.t > T_START)) return { done: false, reason: "mission is already running at " + clock(sim.t) + "; use restart to begin again" };
-      if (a.action === "start" || a.action === "restart") { simRestart(true); log("Sim", "Mission started by voice at T minus 50 seconds. After liftoff: " + sim.speed + "× speed, about " + Math.round(T_SPLASH / sim.speed / 60) + " minutes to splashdown."); return { done: true, mission_clock: "T minus 50 s", note: "You will now read the mission brief aloud by yourself; reply with two or three words only." }; }
+      if (a.action === "jump") return jumpTo(a.event);
+      if (a.action === "start" && sim.started) return { done: false, reason: "mission is already running at " + clock(sim.t) + "; use restart to begin again" };
+      if (a.action === "start" || a.action === "restart") { simRestart(true, a.quick); log("Sim", "Mission started by voice at " + clock(sim.t) + ". After liftoff: " + sim.speed + "× speed, about " + Math.round(T_SPLASH / sim.speed / 60) + " minutes to splashdown."); return { done: true, mission_clock: "T minus " + fmtDur(-sim.t), note: sim.t < -20 ? "You will now read the mission brief aloud by yourself; reply with two or three words only." : "The count starts in a few seconds; reply with two or three words only." }; }
       if (a.action === "hold") { if (!sim.running) return { done: false, reason: "mission is already on hold" }; sim.running = false; return { done: true, held_at: clock(sim.t) }; }
       if (sim.running) return { done: false, reason: "mission is already running" };
-      sim.running = true; sim.last = Date.now(); return { done: true, resumed_at: clock(sim.t) };
+      sim.running = sim.started = true; sim.last = Date.now(); return { done: true, resumed_at: clock(sim.t) };
     case "set_camera": if (!CAMERAS.includes(a.view)) return { done: false, reason: "unknown view" }; sim.camera = a.view; return { done: true, view: a.view };
     case "video_call":
       if (a.action === "hang_up") { const was = sim.call; sim.call = null; return was ? { done: true, ended: was } : { done: false, reason: "no active call" }; }
@@ -630,9 +651,10 @@ function renderHud() {
     row("Camera", sim.camera) + row("Call", sim.call || "none") +
     row("Alerts", fresh.length ? fresh.map(a => a.text).join("; ") : "none", fresh.length ? (warn ? "bad" : "warn") : "ok") +
     (acked.length ? row("Acknowledged, not fixed", acked.map(a => a.text).join("; ")) : "");
-  $("simStart").textContent = sim.running || sim.t > T_START ? "↺ Restart" : "▶ Start mission";
-  $("simPause").textContent = sim.running ? "❚❚ Hold" : "▶ Resume"; $("simPause").hidden = sim.t <= T_START && !sim.running;
+  $("simStart").textContent = sim.started ? "↺ Restart" : "▶ Start mission";
+  $("simPause").textContent = sim.running ? "❚❚ Hold" : "▶ Resume"; $("simPause").hidden = !sim.started;
 }
+$("simFrom").value = store.get("simFrom", "brief");
 simRestart(false);
 setInterval(() => {
   simTick(); renderHud();
@@ -644,10 +666,11 @@ setInterval(() => {
       .finally(() => { if (turn === ac) { turn = null; setState("idle"); } });
   }
 }, 250);
-const startMission = () => { simRestart(true); history = []; renderHud(); log("Sim", "Mission started at T minus 50 seconds. Countdown is real time, then " + sim.speed + "× speed: liftoff to splashdown takes about " + Math.round(T_SPLASH / sim.speed / 60) + " minutes."); };
+const startMission = () => { simRestart(true); history = []; renderHud(); log("Sim", "Mission started at " + clock(sim.t) + ". Countdown is real time, then " + sim.speed + "× speed: liftoff to splashdown takes about " + Math.round(T_SPLASH / sim.speed / 60) + " minutes."); };
 $("simStart").onclick = startMission;
-$("simPause").onclick = () => { sim.running = !sim.running; sim.last = Date.now(); renderHud(); };
+$("simPause").onclick = () => { sim.running = !sim.running; sim.started = true; sim.last = Date.now(); renderHud(); };
 $("simSpeed").onchange = () => { sim.speed = +$("simSpeed").value; };
+$("simFrom").onchange = () => { store.set("simFrom", $("simFrom").value); if (!sim.started) { simRestart(false); renderHud(); } };
 
 // ---------- Claude brain (with console tools) ----------
 const STATIC_CONTEXT = `
@@ -656,7 +679,7 @@ const STATIC_CONTEXT = `
 You are the crew's technical assistant as well as the console's voice. When the crew asks how or why something on the vehicle or in the mission works (for example "how does the scrubber work?", "why do we close visors?", "what does the C25 stage do?"), explain it from your own spaceflight and engineering knowledge in two or three short spoken sentences; this overrides any rule that limits you to console values. Give the general principle, and do not invent specific design figures for this vehicle: if they ask for a number the console does not have, say it is not on the console. Offer more detail only if asked.
 
 ## Mission control in this demo
-You can start, restart, hold and resume the simulated mission with the simulator tool. Do it straight away when the crew asks ("start the mission", "hold", "resume", "restart the mission"); this overrides any rule that says you cannot touch the mission. Ask for a "yes" only before a restart while a mission is running.
+You can start, restart, hold and resume the simulated mission, and jump its clock to just before a major event (liftoff, S200 separation, orbit insertion, deorbit burn, re-entry, parachutes, splashdown), with the simulator tool. Do it straight away when the crew asks ("start the mission", "hold", "resume", "restart the mission"); this overrides any rule that says you cannot touch the mission. Ask for a "yes" only before a restart while a mission is running.
 You can also trigger a simulated fault with inject_fault when asked ("simulate a pressure leak", "test the CO2 alert"): FAN2_LOW, CO2_HIGH, CABIN_PRESS_LOW, COMM1_LOSS.
 
 ## Situational awareness (your main job)
@@ -685,7 +708,7 @@ Length: at most two short sentences, about 25 words, unless the crew asks for mo
 
 ## Demo mission simulator
 The Console Telemetry tools are a live mission simulator on this page: HLVM3 launch countdown, ascent, one orbit, re-entry and splashdown. Every value is simulated and changes in real time, so always call a tool for fresh values. The countdown runs in real time; after liftoff the simulator runs ${sim.speed} times faster than real time; give times exactly as the tools return them.
-Mission clock now: ${clock(sim.t)}${sim.running ? "" : " (on hold, mission not started)"}. Phase: ${phaseAt(sim.t)}.
+Mission clock now: ${clock(sim.t)}${sim.running ? "" : sim.started ? " (on hold)" : " (mission not started yet)"}. Phase: ${phaseAt(sim.t)}.
 Active alerts right now: ${open || "none"}. When the crew says "it" or "that alert", they mean the latest of these.
 You do speak on your own: this console announces every new caution, warning and mission event aloud in your voice the moment it happens, without the crew asking. Never say that you can only speak when spoken to. If the crew asks you to tell them about alerts, say that you already call them out as they come.
 You can also remind and count down: when the crew asks "remind me when…", "tell me 10 seconds before…", "count down every 10 seconds", call set_reminder straight away. Never say you cannot set a reminder or count down. Reminders pending now: ${sim.reminders.length}.
@@ -1008,7 +1031,7 @@ talk.addEventListener("pointerdown", async e => {
   if (state === "off") {
     if (starting) return;
     starting = true; status("Starting…");
-    try { await startAudio(); await getToken(); setState("idle"); if (!sim.running && sim.t <= T_START) say("Arya online. Say, start the mission, when you are ready.", true); }
+    try { await startAudio(); await getToken(); setState("idle"); if (!sim.started) say("Arya online. Say, start the mission, when you are ready.", true); }
     catch (err) { setState("off"); status(err.message || String(err), true); log("Error", err.message || String(err)); }
     starting = false;
     return;
