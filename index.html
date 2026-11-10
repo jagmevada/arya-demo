@@ -302,7 +302,7 @@ const MILESTONES = [
   [T_SPLASH, "splashdown", () => "Splashdown confirmed in the " + region(posAt(T_SPLASH).lat, posAt(T_SPLASH).lon) + ". Welcome home. Recovery ships are on the way."],
   [2200, "orbit status", () => "Orbit status. " + callout() + " We are over the " + region(posAt(sim.t).lat, posAt(sim.t).lon) + "."],
 ];
-const callout = () => { const p = profileAt(sim.t); return "Altitude " + (p.alt < 10 ? p.alt.toFixed(1) : Math.round(p.alt)) + " kilometres, velocity " + p.vel.toFixed(1) + " kilometres per second."; };
+const callout = () => { const p = profileAt(sim.t); return "Altitude " + (p.alt < 10 ? p.alt.toFixed(1) : Math.round(p.alt)) + " kilometres, velocity " + (p.vel < 1 ? Math.round(p.vel * 1000) + " metres per second." : p.vel.toFixed(1) + " kilometres per second."); };
 const ANOM = { // faults injected during the mission
   FAN2_LOW: { t: 420, level: "caution", text: "Cabin fan 2 speed low", fix: "restart_cabin_fan_2" },
   CO2_HIGH: { t: 1700, level: "caution", text: "Cabin carbon dioxide high", fix: "switch_co2_scrubber_b" },
@@ -400,10 +400,10 @@ function region(lat, lon) { // ponytail: crude boxes, good enough for a demo
 const walk = (v, target, k, noise, lo, hi) => Math.min(hi, Math.max(lo, v + (target - v) * k + (Math.random() - 0.5) * noise));
 function say(text, keep) { sim.announce.push({ text, at: Date.now(), keep }); sim.said.push(text); if (sim.said.length > 4) sim.said.shift(); }
 function simTick() {
-  const now = Date.now(), dtm = sim.running ? (now - sim.last) / 1000 * (sim.t < 0 ? 1 : sim.speed) : 0; // countdown runs in real time sim.last = now;
+  const now = Date.now(), dtm = sim.running ? Math.min((now - sim.last) / 1000, 2) * (sim.t < 0 ? 1 : sim.speed) : 0; // countdown runs in real time; a stalled tab can't make the clock jump sim.last = now;
   if (!sim.running) return;
   sim.t = Math.min(sim.t + dtm, T_END);
-  for (const [t, name, text] of MILESTONES) if (sim.t >= t && !sim.fired.has(name)) { sim.fired.add(name); if (text) say(typeof text === "function" ? text() : text, name === "final count"); }
+  for (const [t, name, text] of MILESTONES) if (sim.t >= t && !sim.fired.has(name)) { sim.fired.add(name); if (text) say(typeof text === "function" ? text() : text, !/callout|status/.test(name)); } // mission events are always spoken; only extra callouts may be skipped
   const link = contactNow(); // signal gained or lost is an event too
   if (!link !== !sim.link && sim.t > 0 && sim.t < T_SPLASH && !active("COMM1_LOSS")) say(link ? "Acquisition of signal, " + link + "." : "Loss of signal.", false);
   sim.link = link;
@@ -491,7 +491,7 @@ function runTool(name, a) {
     }
     case "simulator":
       if (a.action === "start" && (sim.running || sim.t > T_START)) return { done: false, reason: "mission is already running at " + clock(sim.t) + "; use restart to begin again" };
-      if (a.action === "start" || a.action === "restart") { simRestart(true); log("Sim", "Mission started by voice at T minus 50 seconds."); return { done: true, mission_clock: "T minus 50 s", note: "You will now read the mission brief aloud by yourself; reply with two or three words only." }; }
+      if (a.action === "start" || a.action === "restart") { simRestart(true); log("Sim", "Mission started by voice at T minus 50 seconds. After liftoff: " + sim.speed + "× speed, about " + Math.round(T_SPLASH / sim.speed / 60) + " minutes to splashdown."); return { done: true, mission_clock: "T minus 50 s", note: "You will now read the mission brief aloud by yourself; reply with two or three words only." }; }
       if (a.action === "hold") { if (!sim.running) return { done: false, reason: "mission is already on hold" }; sim.running = false; return { done: true, held_at: clock(sim.t) }; }
       if (sim.running) return { done: false, reason: "mission is already running" };
       sim.running = true; sim.last = Date.now(); return { done: true, resumed_at: clock(sim.t) };
@@ -514,7 +514,7 @@ function renderHud() {
   const row = (k, v, cls = "") => `<div><span>${k}</span><b class="${cls}">${v}</b></div>`;
   const open = sim.alerts.filter(a => active(a.id)), warn = open.some(a => a.level === "warning");
   $("hud").innerHTML =
-    row("Clock", clock(sim.t) + (sim.running ? "" : " HOLD")) + row("Phase", m.phase) + row("Next", m.next_event) +
+    row("Clock", clock(sim.t) + (sim.running ? "" : " HOLD")) + row("Sim speed", (sim.t < 0 ? 1 : sim.speed) + "×") + row("Phase", m.phase) + row("Next", m.next_event) +
     row("Altitude", m.altitude) + row("Velocity", m.velocity) + row("G load", m.g_load.replace(", weightless", "")) +
     row("Position", m.latitude + " " + m.longitude) + row("Over", m.over) + row("Rev", sim.t >= T_INSERT ? m.revolution : "—") +
     row("Contact", m.ground_contact.replace("in contact via ", ""), m.ground_contact.startsWith("in") ? "ok" : "") +
@@ -530,7 +530,7 @@ function renderHud() {
 simRestart(false);
 setInterval(() => {
   simTick(); renderHud();
-  while (sim.announce.length && !sim.announce[0].keep && Date.now() - sim.announce[0].at > 25000) log("Arya", sim.announce.shift().text + " (not spoken, crew was talking)");
+  while (sim.announce.length && !sim.announce[0].keep && Date.now() - sim.announce[0].at > 25000) log("Arya", sim.announce.shift().text + " (skipped, Arya was busy)");
   if (sim.announce.length && state === "idle" && ctx && !turn) { // Arya calls out events and alerts, like HUD wait_for_event
     const text = sim.announce.shift().text, ac = turn = new AbortController();
     log("Arya", text); setState("speaking", "Tap the button to stop Arya.");
@@ -753,7 +753,7 @@ $("test").onclick = async () => {
   const ac = turn = new AbortController();
   try {
     try { ctx ||= new (window.AudioContext || window.webkitAudioContext)(); await ctx.resume(); } catch {}
-    log("Test", "Page version 11. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
+    log("Test", "Page version 12. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
     const micOk = await step("Microphone access", async () => { await startAudio(); return "allowed"; });
     setState("thinking", "Running test… (tap the button to cancel)"); // keeps the mic from starting a turn during the test
     if (micOk) await step("Microphone sound", async () => {
