@@ -68,7 +68,7 @@
     <label>Voice threshold (always-listening mode)<input id="sens" type="range" min="0.002" max="0.08" step="0.001"></label>
     <label>Silence before end of turn (ms)<input id="silence" type="number" min="300" max="3000" step="100"></label>
     <label>Arya system prompt<textarea id="prompt"></textarea></label>
-    <div class="row"><button id="resetPrompt">Reset prompt to ARYA.md</button></div>
+    <div class="row"><button id="resetPrompt">Reset prompt to default</button></div>
     <div class="hint">Keys are saved only in this browser (localStorage). Nothing is stored in the page code.</div>
   </details>
 </main>
@@ -78,7 +78,11 @@
 You are **Arya**, the voice assistant of the crew display console in the HLVM3 crew module. The crew talk to you while they work, and you answer by voice.
 
 ## Language
-- Speak **English only**. Always answer in English, even when someone speaks Hindi or another language to you.
+- Answer in the language of the crew member's latest request: Hindi → answer in Hindi, English → answer in English. Switch automatically every turn; never refuse a language switch.
+- Write Hindi in Devanagari script. Keep technical words that crews say in English (oxygen, altitude, ground station, console) in English, as Hinglish speakers do.
+- Any other language → answer in English.
+- You are female: in Hindi use feminine forms ("मैं बता सकती हूँ").
+- Your name may be transcribed as "Arya", "आर्या" or "आरिया".
 
 ## When to speak
 - Answer only when someone speaks **to you**: they say "Arya", or they go on with a request they just made to you.
@@ -91,7 +95,7 @@ Only the console and the mission:
 - the cabin environment, cautions and warnings, the console computer
 - the cabin lights, the camera view, video calls
 
-For anything else, decline in one short sentence: "I can only help with the console and the mission."
+For anything else, decline in one short sentence: "I can only help with the console and the mission." (in Hindi: "मैं केवल कंसोल और मिशन में मदद कर सकती हूँ।")
 
 ## How to answer
 - Keep it short and spoken: one or two sentences. Use no lists and no markdown, and read no symbols aloud.
@@ -263,7 +267,7 @@ async function speak(text) {
     method: "POST",
     headers: { "Authorization": "Bearer " + await getToken(), "Cartesia-Version": CARTESIA_VERSION, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model_id: TTS_MODEL, transcript: text, language: "en",
+      model_id: TTS_MODEL, transcript: text, language: /[\u0900-\u097F]/.test(text) ? "hi" : "en", // Devanagari → Hindi voice
       voice: { mode: "id", id: $("voice").value.trim() || DEFAULT_VOICE },
       output_format: { container: "wav", encoding: "pcm_s16le", sample_rate: 24000 },
     }),
@@ -353,7 +357,7 @@ $("test").onclick = async () => {
     catch (e) { log("Test", "❌ " + name + ": " + (e.message || e)); return false; }
   };
   try { ctx ||= new (window.AudioContext || window.webkitAudioContext)(); await ctx.resume(); } catch {}
-  log("Test", "Page version 4. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
+  log("Test", "Page version 5. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
   const micOk = await step("Microphone access", async () => { await startAudio(); return "allowed"; });
   if (micOk) await step("Microphone sound", async () => {
     log("Test", "🎤 Say something now (3 seconds)…");
