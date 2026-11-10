@@ -161,7 +161,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 50; // bump on every push; shown at the bottom of the page
+const VERSION = 51; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -378,7 +378,7 @@ setInterval(() => {
 
 // ---------- Ink STT: one WebSocket per utterance ----------
 let keytermsOk = true; // [UNVERIFIED] query format for Ink keyterms; switched off automatically if Cartesia rejects it
-let claudeCalls = 0;
+let claudeCalls = 0, crewTurns = 0, sirNow = false;
 let uStat = { n: 0, peak: 0 }; // what the mic delivered during the current utterance, for a useful message when nothing was heard
 function startUtterance(initial) {
   uStat = { n: initial.length, peak: 0 };
@@ -814,7 +814,7 @@ You are a crewmate, not a menu system. Talk the way a calm, friendly flight engi
 - If a request is cut off or unclear, ask naturally what they meant, using what you did catch ("The cabin pressure, you mean?").
 - When the crew is chatting and nothing is needed, keep it brief and let them get back to work. Safety comes first: with an active warning, give the safety information first and keep chat to a minimum.
 - Never use the word "simulated" unless the crew asks whether the data is real.
-- Be respectful to the crew. In Hindi always use the respectful "आप" forms (आप, आपको, आपका, कीजिए, बताइए); never "तुम", "तुम्हें", "तू" or their verb forms (करो, चाहो, बोलो). Say "sir" now and then, in English or Hindi ("जी sir", "Yes, sir"), about once in every three or four replies, not in every sentence.
+- Be respectful to the crew. In Hindi always use the respectful "आप" forms (आप, आपको, आपका, कीजिए, बताइए); never "तुम", "तुम्हें", "तू" or their verb forms (करो, चाहो, बोलो). Whether you may say "sir" is decided for each reply by the line "Sir in this reply" further down; follow it exactly.
 - Still short: one or two sentences. Natural does not mean long.
 
 ## Technical questions
@@ -856,6 +856,9 @@ You do speak on your own: this console announces every new caution, warning and 
 You can also remind and count down: when the crew asks "remind me when…", "tell me 10 seconds before…", "count down every 10 seconds", call set_reminder straight away. Never say you cannot set a reminder or count down. You can also act on a timer: for "after 30 seconds switch off all lights" or "at orbit insertion switch to the window camera", call set_reminder with action (lights, camera, a console command, or acknowledging an alert); never offer a reminder instead of doing it. Reminders pending now: ${sim.reminders.length}.
 You recently said aloud, on your own: ${sim.said.map(t => '"' + t + '"').join(" ") || "nothing"}. If the crew answers one of these (for example "confirmed" or "yes, done"), acknowledge it in a few words.
 Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to you, even without your name." : "always listening — follow the When to speak rules strictly."}
+
+## Sir in this reply
+${sirNow ? 'You may say "sir" once in this reply if it sounds natural ("Yes, sir", "जी sir").' : 'Do NOT say "sir" (or "सर") anywhere in this reply.'}
 
 ## Live console snapshot
 This is the Console Telemetry feed, read at this very moment (all simulated). Answer status, position, cabin, alert, timeline and "how safe" questions straight from it in one go; do NOT call console_status or mission_timeline for them. Call a tool only to change something, to get the steps of a procedure, or to control the simulator.
@@ -949,6 +952,7 @@ async function think(userText, signal) {
   const start = history.length;
   history.push({ role: "user", content: "[mission clock " + clock(sim.t) + "] " + userText }); // the stamp shows Claude that time has moved since older turns
   claudeCalls = 0;
+  sirNow = ++crewTurns % 5 === 0; // "sir" is allowed in one reply out of five; a model left to itself says it every time
   try {
     for (let i = 0; i < 6; i++) {
       const j = await claude(history, signal); claudeCalls++;
