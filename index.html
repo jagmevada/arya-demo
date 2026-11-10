@@ -161,7 +161,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 51; // bump on every push; shown at the bottom of the page
+const VERSION = 52; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -587,7 +587,7 @@ function simTick() {
     sim.reminders.filter(r => sim.t >= r.at).forEach(r => {
       if (!r.run) return say(r.text, true);
       const res = runTool(r.run.tool, r.run.input || {}); // a timed action the crew asked for
-      say(res.done === false ? "The timed action did not work: " + (res.reason || "no change") + "." : r.text, true);
+      say(res.done === false ? "The timed action did not work: " + (res.reason || "no change") + "." : r.text || "As you asked earlier: " + describeAction(r.run, res), true);
     });
     sim.reminders = sim.reminders.filter(r => sim.t < r.at);
   }
@@ -653,6 +653,17 @@ function jumpTo(name) { // move the mission clock to just before a major event, 
 for (const n of JUMPS) { const o = document.createElement("option"); o.value = n; o.textContent = n[0].toUpperCase() + n.slice(1); $("simJump").append(o); }
 $("simJump").onchange = () => { const n = $("simJump").value; $("simJump").value = ""; if (n) { history = []; jumpTo(n); renderHud(); } };
 const COMMANDS = Object.values(ANOM).map(a => a.fix);
+// Plain words for what a timed action just did, built from the real result, for when the model gave no sentence of its own
+function describeAction(run, res) {
+  const list = a => a.length ? a.join(", ") : "none";
+  if (run.tool === "set_cabin_lights") { const L = res.lights;
+    return !L.spots_on.length && !L.zones_on.length ? "all cabin lights are off now."
+      : "cabin lights changed. Spots on: " + list(L.spots_on) + ". Zones on: " + list(L.zones_on) + ". Brightness " + L.dim_percent + " percent."; }
+  if (run.tool === "set_camera") return "the camera view is now " + res.view + ".";
+  if (run.tool === "console_command") return (res.effect || run.input.command.replace(/_/g, " ") + " is done") + ".";
+  if (run.tool === "acknowledge_alert") return "acknowledged: " + (res.acknowledged || []).join(", ") + ".";
+  return run.tool.replace(/_/g, " ") + " is done.";
+}
 const TIMED_TOOLS = ["set_cabin_lights", "set_camera", "console_command", "acknowledge_alert"]; // what Arya may do later on a timer; calls and mission control stay out
 function injectFault(id) { // fire a fault now, by button or by voice; a fixed fault can be fired again
   if (!ANOM[id]) return { done: false, reason: "unknown fault", faults: Object.keys(ANOM) };
@@ -687,7 +698,7 @@ const TOOLS = [
     input_schema: { type: "object", properties: { action: { type: "string", enum: ["call", "hang_up"] }, contact: { type: "string", enum: CONTACTS } }, required: ["action"] } },
   { name: "simulator", description: "Control the simulated mission on the crew's request: start or restart it, hold the clock, or resume it. quick=true starts at T minus 10 seconds with no mission brief (\"quick start\", \"skip the brief\", \"start from T minus 10\"); quick=false starts at T minus 50 seconds with the brief; leave it out to use the setting on the page. action=jump with event moves the clock to just before that major event (\"jump to re-entry\", \"go to orbit insertion\"); re-entry is the event \"entry interface\".",
     input_schema: { type: "object", properties: { action: { type: "string", enum: ["start", "restart", "hold", "resume", "jump"] }, quick: { type: "boolean" }, event: { type: "string", enum: JUMPS } }, required: ["action"] } },
-  { name: "set_reminder", description: "Make yourself speak a reminder later, without being asked again. Either give event + seconds_before (\"remind me 10 seconds before orbit insertion\"), or in_seconds from now (\"remind me in 2 minutes to check the valve\"). With event + repeat_every_seconds you count down aloud at that interval until the event. Seconds are mission-clock seconds. message is the exact words you will say then, in the crew's language; leave it out for a countdown. To DO something at that time by yourself (\"after 30 seconds switch off all lights\", \"switch to the window camera at orbit insertion\"), also give action = the tool to run and its input; then message is what you say once it is done.",
+  { name: "set_reminder", description: "Make yourself speak a reminder later, without being asked again. Either give event + seconds_before (\"remind me 10 seconds before orbit insertion\"), or in_seconds from now (\"remind me in 2 minutes to check the valve\"). With event + repeat_every_seconds you count down aloud at that interval until the event. Seconds are mission-clock seconds. message is the exact words you will say then, in the crew's language; leave it out for a countdown. To DO something at that time by yourself (\"after 30 seconds switch off all lights\", \"switch to the window camera at orbit insertion\"), also give action = the tool to run and its input; then message is REQUIRED: the full sentence you will say once it is done, naming exactly what was done, in the crew's language (\"सारी lights बंद कर दी हैं।\", \"Window camera is on.\"), because the crew may have forgotten what they asked for.",
     input_schema: { type: "object", properties: { event: { type: "string", enum: MILESTONES.map(m => m[1]).filter(n => !/callout|status|final count|mission brief/.test(n)) },
       seconds_before: { type: "number" }, in_seconds: { type: "number" }, repeat_every_seconds: { type: "number" }, message: { type: "string" },
       action: { type: "object", properties: { tool: { type: "string", enum: TIMED_TOOLS }, input: { type: "object" } }, required: ["tool", "input"] } } } },
@@ -728,7 +739,7 @@ function runTool(name, a) {
     case "cancel_reminders": { const n = sim.reminders.length; sim.reminders = []; return { done: true, cancelled: n }; }
     case "set_reminder": {
       if (a.action && !TIMED_TOOLS.includes(a.action.tool)) return { done: false, reason: "that action cannot be put on a timer", allowed: TIMED_TOOLS };
-      const run = a.action && !a.repeat_every_seconds ? a.action : null, doneText = a.message || "Timed action done.";
+      const run = a.action && !a.repeat_every_seconds ? a.action : null, doneText = a.message || ""; // empty = describe the real result when it fires
       const ev = a.event && MILESTONES.find(m => m[1] === a.event), left = x => { x = Math.round(x); const m = Math.floor(x / 60), sec = x % 60; return x < 120 ? x + " seconds" : m + " minutes" + (sec ? " " + sec + " seconds" : ""); };
       let list = [];
       if (ev) {
