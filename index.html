@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Arya — Voice Demo</title>
+<title>Arya — Crew Voice Assistant</title>
 <style>
   :root { --bg:#0b0f17; --panel:#141a26; --line:#243045; --text:#e6edf7; --dim:#8a97ad; --acc:#ff8a1f; --ok:#3ecf8e; --err:#ff5c5c; }
   * { box-sizing:border-box; }
@@ -44,7 +44,7 @@
 </head>
 <body>
 <main>
-  <header><h1><span>ARYA</span> voice demo</h1><div><button id="test">Test</button> <button id="clear">Clear</button></div></header>
+  <header><h1><span>ARYA</span> crew voice assistant</h1><div><button id="test">Test</button> <button id="clear">Clear</button></div></header>
 
   <div class="seg" id="mode">
     <button data-mode="ptt">Push to talk</button>
@@ -126,7 +126,8 @@ const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
 const $ = id => document.getElementById(id);
-let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, history = [];
+let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
+let turn = null, playing = [], quietUntil = 0, voiced = 0, uttStart = 0, micOn = false, peak = 0; // turn = AbortController of the running turn
 
 // ---------- settings (localStorage, per browser) ----------
 const store = {
@@ -149,14 +150,15 @@ let mode = store.get("mode", "ptt");
 function setMode(m) {
   mode = m; store.set("mode", m);
   document.querySelectorAll("#mode button").forEach(b => b.classList.toggle("on", b.dataset.mode === m));
-  if (utt) { utt.end(); utt = null; }
-  if (ctx) setState("idle");
+  if (utt) { utt.end().catch(() => {}); utt = null; }
+  if (state === "idle" || state === "listening") setState("idle"); // never reopen the mic under a running turn
 }
 document.querySelectorAll("#mode button").forEach(b => b.onclick = () => setMode(b.dataset.mode));
 setMode(mode);
 
 // ---------- UI ----------
 function setState(s, msg) {
+  if (state === "speaking" && s !== "speaking") quietUntil = performance.now() + 400;
   state = s;
   const t = $("talk");
   t.className = s;
@@ -164,7 +166,7 @@ function setState(s, msg) {
     off: "Tap to start",
     idle: mode === "ptt" ? "Hold to talk" : "Listening…",
     listening: mode === "ptt" ? "Release to send" : "Hearing you…",
-    thinking: "Thinking…", speaking: "Speaking…",
+    thinking: "Thinking…", speaking: "Tap to stop",
   }[s];
   status(msg ?? (s === "idle" && mode === "always" ? 'Say "Arya, …" to talk to her.' : ""));
 }
@@ -180,24 +182,41 @@ $("clear").onclick = () => { $("log").innerHTML = ""; history = []; };
 function drawThr() { $("thr").style.left = Math.min(100, +$("sens").value / 0.08 * 100) + "%"; }
 drawThr();
 
-// ---------- Cartesia access token (minted in-browser from your key) ----------
-async function getToken() {
-  if (token && Date.now() < tokenExp - 30000) return token;
-  const key = $("cKey").value.trim();
-  if (!key) throw new Error("Enter your Cartesia API key in Settings.");
-  let r;
-  try {
-    r = await fetch("https://api.cartesia.ai/access-token", {
-      method: "POST",
-      headers: { "Authorization": "Bearer " + key, "Cartesia-Version": CARTESIA_VERSION, "Content-Type": "application/json" },
-      body: JSON.stringify({ grants: { stt: true, tts: true }, expires_in: 300 }),
-    });
-  } catch { throw new Error("Cartesia token request blocked by the browser (network/CORS)."); }
-  if (!r.ok) throw new Error("Cartesia token: " + r.status + " " + (await r.text()).slice(0, 200));
-  const j = await r.json();
-  token = j.token; tokenExp = Date.now() + (j.expires_in || 300) * 1000;
-  return token;
+// ---------- network helper: timeout + cancel ----------
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function fetchT(url, opts, ms, signal) {
+  const ac = new AbortController(); let late = false;
+  if (signal?.aborted) ac.abort(); else signal?.addEventListener("abort", () => ac.abort());
+  const timer = setTimeout(() => { late = true; ac.abort(); }, ms); // covers time to response headers only
+  try { return await fetch(url, { ...opts, signal: ac.signal }); }
+  catch (e) { throw late ? new Error("No answer from " + new URL(url).host + " in " + ms / 1000 + " s. Check the network.") : e; }
+  finally { clearTimeout(timer); }
 }
+
+// ---------- Cartesia access token (minted in-browser from your key, kept warm) ----------
+function getToken() {
+  if (token && Date.now() < tokenExp - 30000) return Promise.resolve(token);
+  return tokenP ||= (async () => {
+    const key = $("cKey").value.trim();
+    if (!key) throw new Error("Enter your Cartesia API key in Settings.");
+    let r;
+    try {
+      r = await fetchT("https://api.cartesia.ai/access-token", {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + key, "Cartesia-Version": CARTESIA_VERSION, "Content-Type": "application/json" },
+        body: JSON.stringify({ grants: { stt: true, tts: true }, expires_in: 300 }),
+      }, 10000);
+    } catch (e) { throw new Error("Cartesia token request failed: " + e.message); }
+    if (!r.ok) throw new Error("Cartesia token: " + r.status + " " + (await r.text()).slice(0, 200));
+    const j = await r.json();
+    token = j.token; tokenExp = Date.now() + (j.expires_in || 300) * 1000;
+    return token;
+  })().finally(() => { tokenP = null; });
+}
+// Refresh in the background so the first request after a quiet spell doesn't wait for a new token.
+setInterval(() => {
+  if (micOn && document.visibilityState === "visible" && Date.now() > tokenExp - 90000) getToken().catch(() => {});
+}, 20000);
 
 // ---------- Ink STT: one WebSocket per utterance ----------
 function startUtterance(initial) {
@@ -375,41 +394,49 @@ function renderHud() {
 }
 setInterval(() => {
   simTick(); renderHud();
-  if (sim.announce.length && state === "idle" && ctx) { // Arya calls out new alerts, like HUD wait_for_event
-    const text = sim.announce.shift(); log("Arya", text); setState("speaking");
-    speak(text).catch(e => log("Error", e.message)).finally(() => setState("idle"));
+  if (sim.announce.length && state === "idle" && ctx && !turn) { // Arya calls out new alerts, like HUD wait_for_event
+    const text = sim.announce.shift(), ac = turn = new AbortController();
+    log("Arya", text); setState("speaking", "Tap the button to stop Arya.");
+    speak(text, ac.signal).catch(e => { if (!ac.signal.aborted) log("Error", e.message); })
+      .finally(() => { if (turn === ac) { turn = null; setState("idle"); } });
   }
 }, 1000);
 $("simRestart").onclick = () => { simRestart(); renderHud(); log("Sim", "Simulator restarted: MET 4 h 8 min, alerts at +2 and +7 minutes."); };
 
 // ---------- Claude brain (with console tools) ----------
 function demoContext() {
+  const open = sim.alerts.filter(a => !a.acknowledged).map(a => a.id + " (" + a.text + ")").join(", ");
   return `
 
 ## Demo console
 The Console Telemetry tools are a live simulator on this page: every value is simulated, and changes in real time. Always call a tool for fresh values.
+Unacknowledged alerts right now: ${open || "none"}. When the crew says "it" or "that alert", they mean the latest of these.
 Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to you, even without your name." : "always listening — follow the When to speak rules strictly."}`;
 }
-async function claude(messages) {
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": $("aKey").value.trim(), "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true", "content-type": "application/json",
-    },
-    body: JSON.stringify({ model: $("model").value, max_tokens: 400, system: $("prompt").value + demoContext(), tools: TOOLS, messages }),
-  });
-  if (!r.ok) throw new Error("Claude: " + r.status + " " + (await r.text()).slice(0, 200));
-  return r.json();
+async function claude(messages, signal) {
+  for (let attempt = 0; ; attempt++) {
+    const r = await fetchT("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": $("aKey").value.trim(), "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true", "content-type": "application/json",
+      },
+      body: JSON.stringify({ model: $("model").value, max_tokens: 400, system: $("prompt").value + demoContext(), tools: TOOLS, messages }),
+    }, 30000, signal);
+    if (r.ok) return r.json();
+    if (attempt === 0 && [429, 500, 502, 503, 529].includes(r.status)) { await sleep(800); continue; } // one retry on overload
+    throw new Error("Claude: " + r.status + " " + (await r.text()).slice(0, 200));
+  }
 }
-async function think(userText) {
+async function think(userText, signal) {
   if (!$("aKey").value.trim()) throw new Error("Enter your Anthropic API key in Settings.");
   const turns = history.flatMap((m, i) => m.role === "user" && typeof m.content === "string" ? [i] : []);
   if (turns.length > 6) history = history.slice(turns[turns.length - 6]); // ponytail: keep last 6 turns, cut only at turn starts
+  const start = history.length;
   history.push({ role: "user", content: userText });
   try {
     for (let i = 0; i < 6; i++) {
-      const j = await claude(history);
+      const j = await claude(history, signal);
       history.push({ role: "assistant", content: j.content });
       const uses = j.content.filter(c => c.type === "tool_use");
       if (j.stop_reason !== "tool_use" || !uses.length)
@@ -421,43 +448,74 @@ async function think(userText) {
       }) });
     }
     throw new Error("Too many tool calls in one turn.");
-  } catch (e) { history = []; throw e; }
+  } catch (e) { history.length = start; throw e; } // failed or cancelled turn leaves no half-finished tool call behind
 }
 
-// ---------- Sonic TTS ----------
-async function speak(text) {
-  const r = await fetch("https://api.cartesia.ai/tts/bytes", {
+// ---------- Sonic TTS: streamed, plays as the audio arrives ----------
+const TTS_RATE = 24000;
+function stopAudio() { for (const s of playing) { try { s.stop(); } catch {} } playing = []; }
+async function speak(text, signal) { // resolves with ms until first audio
+  const t0 = performance.now();
+  if (ctx.state !== "running") await ctx.resume().catch(() => {});
+  const r = await fetchT("https://api.cartesia.ai/tts/bytes", {
     method: "POST",
     headers: { "Authorization": "Bearer " + await getToken(), "Cartesia-Version": CARTESIA_VERSION, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model_id: TTS_MODEL, transcript: text, language: /[\u0900-\u097F]/.test(text) ? "hi" : "en", // Devanagari → Hindi voice
+      model_id: TTS_MODEL, transcript: text, language: /[ऀ-ॿ]/.test(text) ? "hi" : "en", // Devanagari → Hindi voice
       voice: { mode: "id", id: $("voice").value.trim() || DEFAULT_VOICE },
-      output_format: { container: "wav", encoding: "pcm_s16le", sample_rate: 24000 },
+      output_format: { container: "raw", encoding: "pcm_s16le", sample_rate: TTS_RATE },
     }),
-  });
+  }, 15000, signal);
   if (!r.ok) throw new Error("Sonic: " + r.status + " " + (await r.text()).slice(0, 200));
-  const buf = await ctx.decodeAudioData(await r.arrayBuffer());
-  const src = ctx.createBufferSource();
-  src.buffer = buf; src.connect(ctx.destination);
-  await new Promise(res => { src.onended = res; src.start(); });
+  let at = 0, first = null, last = null, pend = new Uint8Array(0);
+  const play = bytes => {
+    const n = bytes.length >> 1; if (!n) return;
+    const buf = ctx.createBuffer(1, n, TTS_RATE), ch = buf.getChannelData(0), dv = new DataView(bytes.buffer, bytes.byteOffset, n * 2);
+    for (let i = 0; i < n; i++) ch[i] = dv.getInt16(i * 2, true) / 32768;
+    const src = ctx.createBufferSource(); src.buffer = buf; src.connect(ctx.destination);
+    if (first === null) first = performance.now() - t0;
+    at = Math.max(at, ctx.currentTime + 0.06); // ponytail: 60 ms lead; a slow network gives a short gap, not a crash
+    src.start(at); at += buf.duration; playing.push(src); last = src;
+  };
+  const feed = (chunk, flush) => {
+    const all = new Uint8Array(pend.length + chunk.length); all.set(pend); all.set(chunk, pend.length);
+    if (all.length < (flush ? 2 : TTS_RATE * 2 * 0.12)) { pend = all; return; } // batch ~120 ms per buffer
+    const cut = all.length & ~1; play(all.subarray(0, cut)); pend = all.slice(cut);
+  };
+  if (r.body?.getReader) {
+    const rd = r.body.getReader();
+    for (;;) { const { done, value } = await rd.read(); if (done) break; if (signal?.aborted) return first; feed(value, false); }
+  } else feed(new Uint8Array(await r.arrayBuffer()), false);
+  feed(new Uint8Array(0), true);
+  if (last && !signal?.aborted) await new Promise(res => { last.onended = res; signal?.addEventListener("abort", res); });
+  return first;
 }
 
 // ---------- turn handling ----------
+function interrupt() { if (turn) { turn.abort(); turn = null; } stopAudio(); }
+const secs = ms => (ms / 1000).toFixed(1) + " s";
 async function finishTurn() {
   const u = utt; utt = null;
   if (!u) return;
+  const ac = turn = new AbortController(), t0 = performance.now();
   setState("thinking", "Transcribing…");
   try {
-    const text = (await u.end()).trim();
-    if (!text) { setState("idle", "Didn't catch anything."); return; }
+    const text = (await u.end()).trim(), t1 = performance.now();
+    if (turn !== ac) return;
+    if (!text) { turn = null; setState("idle", "Didn't catch anything."); return; }
     log("You", text);
-    status("Arya is thinking…");
-    const reply = await think(text);
+    status("Arya is thinking… (tap to cancel)");
+    const reply = await think(text, ac.signal), t2 = performance.now();
+    if (turn !== ac) return;
     log("Arya", reply);
-    if (reply !== "..." && reply.replace(/[.\s…]/g, "")) { setState("speaking"); await speak(reply); }
-    setState("idle");
+    let first = null;
+    if (reply.replace(/[.\s…]/g, "")) { setState("speaking", "Tap the button to stop Arya."); first = await speak(reply, ac.signal); }
+    if (turn !== ac) return;
+    turn = null;
+    setState("idle", "Ink " + secs(t1 - t0) + " · Claude " + secs(t2 - t1) + (first === null ? "" : " · Sonic " + secs(first)));
   } catch (e) {
-    setState("idle"); status(e.message, true);
+    if (turn !== ac) return; // cancelled by the crew: the new state is already set
+    turn = null; stopAudio(); setState("idle"); status(e.message, true);
   }
 }
 
@@ -472,25 +530,34 @@ function toPcm16(f32) {
   }
   return out.buffer;
 }
+const MIN_VOICED = 3, MAX_UTT_MS = 20000; // always-listening: ignore clicks under ~250 ms, cap one turn at 20 s
 function onAudio(f32) {
   let sum = 0; for (let i = 0; i < f32.length; i++) sum += f32[i] * f32[i];
   const rms = Math.sqrt(sum / f32.length), loud = rms > +$("sens").value;
   peak = Math.max(peak, rms);
   $("lvl").style.width = Math.min(100, rms / 0.08 * 100) + "%";
-  if (state !== "idle" && state !== "listening") { preroll = []; return; } // mute mic while Arya thinks/speaks
+  if (state !== "idle" && state !== "listening") { preroll = []; return; } // mic is closed while Arya thinks/speaks
   const pcm = toPcm16(f32);
   if (mode === "ptt") { if (utt) utt.send(pcm); return; }
   const now = performance.now();
   if (!utt) {
+    if (now < quietUntil) return; // let the room go quiet after Arya's own voice
     preroll.push(pcm); if (preroll.length > 4) preroll.shift(); // ~350 ms so the first syllable isn't lost
-    if (loud) { utt = startUtterance(preroll); preroll = []; lastVoice = now; setState("listening"); }
+    if (loud) { utt = startUtterance(preroll); preroll = []; lastVoice = uttStart = now; voiced = 1; setState("listening"); }
   } else {
     utt.send(pcm);
-    if (loud) lastVoice = now;
-    else if (now - lastVoice > +$("silence").value) finishTurn();
+    if (loud) { lastVoice = now; voiced++; }
+    if (now - lastVoice > +$("silence").value || now - uttStart > MAX_UTT_MS) {
+      if (voiced >= MIN_VOICED) finishTurn();
+      else { utt.end().catch(() => {}); utt = null; setState("idle"); } // just a noise: drop it, no Claude call
+    }
   }
 }
-let micOn = false, peak = 0;
+let wake = null;
+async function keepAwake() { try { wake = await navigator.wakeLock?.request("screen"); } catch {} } // stop the iPad sleeping mid-demo
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && micOn) { keepAwake(); ctx?.resume().catch(() => {}); }
+});
 async function startAudio() {
   if (micOn) return;
   if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser gives no microphone API here. Open the page in Safari (not an in-app browser) over https.");
@@ -508,51 +575,77 @@ async function startAudio() {
   const mute = ctx.createGain(); mute.gain.value = 0;
   proc.onaudioprocess = e => onAudio(e.inputBuffer.getChannelData(0));
   src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
-  micOn = true;
+  micOn = true; keepAwake();
 }
 
 // ---------- diagnostics (no devtools on iPad) ----------
 window.addEventListener("error", e => log("Error", e.message));
 window.addEventListener("unhandledrejection", e => log("Error", String(e.reason?.message || e.reason)));
 $("test").onclick = async () => {
+  if (turn || utt) return;
   const step = async (name, fn) => {
     try { const r = await fn(); log("Test", "✅ " + name + (r ? ": " + r : "")); return true; }
     catch (e) { log("Test", "❌ " + name + ": " + (e.message || e)); return false; }
   };
-  try { ctx ||= new (window.AudioContext || window.webkitAudioContext)(); await ctx.resume(); } catch {}
-  log("Test", "Page version 6. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
-  const micOk = await step("Microphone access", async () => { await startAudio(); return "allowed"; });
-  if (micOk) await step("Microphone sound", async () => {
-    log("Test", "🎤 Say something now (3 seconds)…");
-    peak = 0; await new Promise(r => setTimeout(r, 3000));
-    // ponytail: 0.003 RMS floor is a guess; tune if a working mic reads lower
-    if (peak < 0.003) throw new Error("access allowed but no sound (peak " + peak.toFixed(4) + "). Check mic isn't muted or used by another app.");
-    return "working, peak level " + peak.toFixed(3) + " (voice threshold " + $("sens").value + ")";
-  });
-  if (micOk && state === "off") setState("idle");
-  const okC = await step("Cartesia key → access token", async () => { token = null; await getToken(); });
-  let reply = "Arya online.";
-  await step("Claude (" + $("model").value + ")", async () => {
-    const saved = history; history = [];
-    try { reply = await think("Push-to-talk test. Reply with exactly: Arya online."); } finally { history = saved; }
-    return reply;
-  });
-  if (okC) await step("Sonic voice", async () => { await speak(reply); return "you should have heard it"; });
+  const ac = turn = new AbortController();
+  try {
+    try { ctx ||= new (window.AudioContext || window.webkitAudioContext)(); await ctx.resume(); } catch {}
+    log("Test", "Page version 7. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
+    const micOk = await step("Microphone access", async () => { await startAudio(); return "allowed"; });
+    setState("thinking", "Running test… (tap the button to cancel)"); // keeps the mic from starting a turn during the test
+    if (micOk) await step("Microphone sound", async () => {
+      log("Test", "🎤 Say something now (3 seconds)…");
+      peak = 0; await sleep(3000);
+      // ponytail: 0.003 RMS floor is a guess; tune if a working mic reads lower
+      if (peak < 0.003) throw new Error("access allowed but no sound (peak " + peak.toFixed(4) + "). Check mic isn't muted or used by another app.");
+      return "working, peak level " + peak.toFixed(3) + " (voice threshold " + $("sens").value + ")";
+    });
+    const okC = await step("Cartesia key → access token", async () => { token = null; const t = performance.now(); await getToken(); return secs(performance.now() - t); });
+    let reply = "Arya online.";
+    await step("Claude (" + $("model").value + ")", async () => {
+      const saved = history, t = performance.now(); history = [];
+      try { reply = await think("Push-to-talk test. Reply with exactly: Arya online.", ac.signal); } finally { history = saved; }
+      return reply + " (" + secs(performance.now() - t) + ")";
+    });
+    if (okC && turn === ac) await step("Sonic voice", async () => "first audio after " + secs(await speak(reply, ac.signal)));
+  } finally {
+    if (turn === ac) { turn = null; setState(micOn ? "idle" : "off", "Test finished."); }
+  }
 };
 
 // ---------- button ----------
 const talk = $("talk");
+let pressAt = 0, starting = false, stopped = false;
 talk.addEventListener("contextmenu", e => e.preventDefault());
 talk.addEventListener("pointerdown", async e => {
   e.preventDefault();
+  if (ctx && ctx.state !== "running") ctx.resume().catch(() => {});
   if (state === "off") {
+    if (starting) return;
+    starting = true; status("Starting…");
     try { await startAudio(); await getToken(); setState("idle"); }
     catch (err) { setState("off"); status(err.message || String(err), true); log("Error", err.message || String(err)); }
+    starting = false;
     return;
   }
-  if (mode === "ptt" && state === "idle") { talk.setPointerCapture(e.pointerId); utt = startUtterance([]); setState("listening"); }
+  stopped = false;
+  if (state === "speaking" || state === "thinking") { // the crew overrides Arya
+    interrupt(); stopped = true;
+    setState("idle", "Stopped.");
+    if (mode !== "ptt") return;
+  }
+  if (mode === "ptt" && state === "idle") {
+    try { talk.setPointerCapture(e.pointerId); } catch {}
+    pressAt = performance.now(); utt = startUtterance([]); setState("listening");
+  }
 });
-const release = () => { if (mode === "ptt" && state === "listening") finishTurn(); };
+const release = () => {
+  if (mode !== "ptt" || state !== "listening") return;
+  if (performance.now() - pressAt < 350) { // a tap, not speech
+    utt?.end().catch(() => {}); utt = null;
+    setState("idle", stopped ? "Stopped." : "Hold the button while you speak.");
+  } else finishTurn();
+};
 talk.addEventListener("pointerup", release);
 talk.addEventListener("pointercancel", release);
 </script>
