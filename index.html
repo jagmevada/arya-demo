@@ -137,7 +137,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 32; // bump on every push; shown at the bottom of the page
+const VERSION = 33; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -442,9 +442,11 @@ function region(lat, lon) { // ponytail: crude boxes, good enough for a demo
 }
 const walk = (v, target, k, noise, lo, hi) => Math.min(hi, Math.max(lo, v + (target - v) * k + (Math.random() - 0.5) * noise));
 // urgent = goes to the front of the queue
-function say(text, keep, urgent) { sim.announce[urgent ? "unshift" : "push"]({ text, at: Date.now(), keep }); sim.said.push(text); if (sim.said.length > 8) sim.said.shift(); }
+// valid = optional test run just before speaking; a queued line that is no longer true is dropped
+function say(text, keep, urgent, valid) { sim.announce[urgent ? "unshift" : "push"]({ text, at: Date.now(), keep, valid }); sim.said.push(text); if (sim.said.length > 8) sim.said.shift(); }
 function simTick() {
   // The clock waits while a mission event is still queued to be spoken, so Arya's words and the clock stay together.
+  sim.announce = sim.announce.filter(a => !a.valid || a.valid());
   const waiting = ctx && sim.announce.some(a => a.keep);
   const now = Date.now(), dtm = sim.running && !waiting ? Math.min((now - sim.last) / 1000, 2) * (sim.t < 0 ? 1 : sim.speed) : 0;
   sim.last = now; // countdown runs in real time; the 2 s cap stops a stalled tab from making the clock jump;
@@ -475,10 +477,10 @@ function simTick() {
     sim.rate.press = 0.95 * sim.rate.press + 0.05 * (e.press - p0) / dtE * 60;
   }
   ESCALATE.forEach(([id, test, text], i) => { // the value got worse: tell the crew once, even if the alert was acknowledged
-    if (active(id) && !sim.fired.has("esc" + i) && test()) { sim.fired.add("esc" + i); say(text(), true, true); }
+    if (active(id) && !sim.fired.has("esc" + i) && test()) { sim.fired.add("esc" + i); say(text(), true, true, () => active(id)); }
   });
   for (const a of sim.alerts) if (active(a.id) && !a.acknowledged && now - a.saidAt > REMIND_MS && !sim.announce.length) {
-    a.saidAt = now; say("Reminder. " + a.text + ", not acknowledged. " + NOW[a.id](), true);
+    a.saidAt = now; say("Reminder. " + a.text + ", not acknowledged. " + NOW[a.id](), true, false, () => active(a.id) && !a.acknowledged);
   }
   if (sim.call && !contactNow()) { sim.call = null; say("Call dropped: loss of signal.", true); }
 }
@@ -575,7 +577,7 @@ function runTool(name, a) {
     case "inject_fault": return injectFault(a.alert_id);
     case "cancel_reminders": { const n = sim.reminders.length; sim.reminders = []; return { done: true, cancelled: n }; }
     case "set_reminder": {
-      const ev = a.event && MILESTONES.find(m => m[1] === a.event), left = x => x < 120 ? Math.round(x) + " seconds" : Math.round(x / 60) + " minutes";
+      const ev = a.event && MILESTONES.find(m => m[1] === a.event), left = x => { x = Math.round(x); const m = Math.floor(x / 60), sec = x % 60; return x < 120 ? x + " seconds" : m + " minutes" + (sec ? " " + sec + " seconds" : ""); };
       let list = [];
       if (ev) {
         if (ev[0] <= sim.t) return { done: false, reason: a.event + " has already happened" };
@@ -809,7 +811,7 @@ async function finishTurn() {
     if (!text) { // say why, so a mic or permission fault is not mistaken for a speech-recognition miss
       turn = null; const st = uStat, sec = (st.n * 4096 / ctx.sampleRate).toFixed(1);
       if (st.n < 3) { setState("idle"); const d = "No sound reached the app from the microphone: " + micDiag() + ", permission " + await micPermission() + "."; status(d + " Restarting the mic; tap again.", true); log("Error", d); startAudio(true).catch(e => status(e.message, true)); } // repair after the fact; a check before the turn gave false alarms
-      else if (st.peak < 0.004) { setState("idle"); status("Microphone was silent for " + sec + " s (level " + st.peak.toFixed(4) + "). Check that no other app is using the mic, then tap again.", true); log("Error", "Silent mic: " + micDiag()); }
+      else if (st.peak < 0.004) { setState("idle"); status("The mic gave only silence for " + sec + " s. Tap and speak again.", true); log("Error", "Silent mic: " + micDiag()); }
       else setState("idle", "Heard " + sec + " s of sound but no words. Speak a little longer or closer.");
       return;
     }
@@ -962,9 +964,14 @@ $("test").onclick = async () => {
 const talk = $("talk");
 let starting = false, stopped = false;
 talk.addEventListener("contextmenu", e => e.preventDefault());
+const wakeAudio = () => { // must run directly inside a tap: phones keep audio suspended if it is started later, after a permission prompt
+  try { ctx ||= new (window.AudioContext || window.webkitAudioContext)(); if (ctx.state !== "running") return ctx.resume().catch(() => {}); } catch {}
+};
+document.addEventListener("pointerdown", wakeAudio, true); // any tap on the page (Start mission, fault buttons) keeps audio awake
 talk.addEventListener("pointerdown", async e => {
   e.preventDefault();
-  if (ctx && ctx.state !== "running") ctx.resume().catch(() => {});
+  const waking = wakeAudio();
+  if (waking && state !== "off") await waking; // audio was asleep: wake it before recording, or the turn gets no sound
   if (state === "off") {
     if (starting) return;
     starting = true; status("Starting…");
