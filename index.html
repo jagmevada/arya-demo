@@ -132,7 +132,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 22; // bump on every push; shown at the bottom of the page
+const VERSION = 23; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -330,6 +330,20 @@ const SOPS = { // demo procedures
       "If both links fail, continue the timeline on board; the deorbit sequence is automatic."],
     safety: () => "Safe. Only voice and telemetry to ground are affected; vehicle systems are normal." },
 };
+// Situational awareness: what Arya adds on her own while a fault is open
+const NOW = { // one short line with the live value
+  FAN2_LOW: () => "Cabin temperature " + sim.env.temp.toFixed(1) + " degrees, limit 27.",
+  CO2_HIGH: () => "Carbon dioxide " + sim.env.co2.toFixed(2) + " percent, limit 1.0.",
+  CABIN_PRESS_LOW: () => "Cabin pressure " + sim.env.press.toFixed(1) + " kilopascals, limit 80.",
+  COMM1_LOSS: () => "No ground link.",
+};
+const ESCALATE = [ // [fault, test, what to say] — spoken once each time the value gets worse
+  ["CO2_HIGH", () => sim.env.co2 >= 0.8, () => "Carbon dioxide still rising, now " + sim.env.co2.toFixed(2) + " percent. Limit is 1.0."],
+  ["CABIN_PRESS_LOW", () => sim.env.press <= 96, () => "Cabin pressure still falling, now " + sim.env.press.toFixed(1) + " kilopascals."],
+  ["CABIN_PRESS_LOW", () => sim.env.press <= 88, () => "Warning. Cabin pressure " + sim.env.press.toFixed(1) + " kilopascals and falling. Limit is 80."],
+  ["FAN2_LOW", () => sim.env.temp >= 24.3, () => "Cabin temperature rising, now " + sim.env.temp.toFixed(1) + " degrees."],
+];
+const REMIND_MS = 75000; // repeat an unacknowledged alert this often (real time)
 let sim;
 function simRestart(running) {
   sim = {
@@ -404,7 +418,8 @@ function region(lat, lon) { // ponytail: crude boxes, good enough for a demo
   return lon > 60 ? "Asia" : lat > 35 ? "Europe" : "Africa and Arabia";
 }
 const walk = (v, target, k, noise, lo, hi) => Math.min(hi, Math.max(lo, v + (target - v) * k + (Math.random() - 0.5) * noise));
-function say(text, keep) { sim.announce.push({ text, at: Date.now(), keep }); sim.said.push(text); if (sim.said.length > 4) sim.said.shift(); }
+// urgent = goes to the front of the queue
+function say(text, keep, urgent) { sim.announce[urgent ? "unshift" : "push"]({ text, at: Date.now(), keep }); sim.said.push(text); if (sim.said.length > 8) sim.said.shift(); }
 function simTick() {
   // The clock waits while a mission event is still queued to be spoken, so Arya's words and the clock stay together.
   const waiting = ctx && sim.announce.some(a => a.keep);
@@ -417,8 +432,8 @@ function simTick() {
   if (!link !== !sim.link && sim.t > 0 && sim.t < T_SPLASH && !active("COMM1_LOSS")) say(link ? "Acquisition of signal, " + link + "." : "Loss of signal.", false);
   sim.link = link;
   for (const [id, a] of Object.entries(ANOM)) if (sim.t >= a.t && !sim.fired.has(id)) {
-    sim.fired.add(id); sim.alerts.push({ id, text: a.text, level: a.level, acknowledged: false });
-    say((a.level === "warning" ? "Warning. " : "Caution. ") + a.text + ".", true);
+    sim.fired.add(id); sim.alerts.push({ id, text: a.text, level: a.level, acknowledged: false, saidAt: now });
+    say((a.level === "warning" ? "Warning. " : "Caution. ") + a.text + ".", true, a.level === "warning");
   }
   sim.acc += dtm;
   if (now - sim.envLast < 1000) return; // cabin values move once a second; the clock itself ticks 4 times a second
@@ -431,6 +446,12 @@ function simTick() {
   if (dtE > 0) { // trend per mission minute, smoothed
     sim.rate.co2 = 0.95 * sim.rate.co2 + 0.05 * (e.co2 - c0) / dtE * 60;
     sim.rate.press = 0.95 * sim.rate.press + 0.05 * (e.press - p0) / dtE * 60;
+  }
+  ESCALATE.forEach(([id, test, text], i) => { // the value got worse: tell the crew once, even if the alert was acknowledged
+    if (active(id) && !sim.fired.has("esc" + i) && test()) { sim.fired.add("esc" + i); say(text(), true, true); }
+  });
+  for (const a of sim.alerts) if (active(a.id) && !a.acknowledged && now - a.saidAt > REMIND_MS && !sim.announce.length) {
+    a.saidAt = now; say("Reminder. " + a.text + ", not acknowledged. " + NOW[a.id](), true);
   }
   if (sim.call && !contactNow()) { sim.call = null; say("Call dropped: loss of signal.", true); }
 }
@@ -461,8 +482,9 @@ function injectFault(id) { // fire a fault now, by button or by voice; a fixed f
   if (!sim.running) return { done: false, reason: "mission is on hold; start or resume it first" };
   sim.fixed.delete(id); sim.fired.add(id);
   sim.alerts = sim.alerts.filter(a => a.id !== id);
-  sim.alerts.push({ id, text: ANOM[id].text, level: ANOM[id].level, acknowledged: false });
-  say((ANOM[id].level === "warning" ? "Warning. " : "Caution. ") + ANOM[id].text + ".", true);
+  ESCALATE.forEach(([eid], i) => { if (eid === id) sim.fired.delete("esc" + i); });
+  sim.alerts.push({ id, text: ANOM[id].text, level: ANOM[id].level, acknowledged: false, saidAt: Date.now() });
+  say((ANOM[id].level === "warning" ? "Warning. " : "Caution. ") + ANOM[id].text + ".", true, ANOM[id].level === "warning");
   return { done: true, triggered: ANOM[id].text, note: "You will announce it aloud by yourself; reply with two or three words only." };
 }
 for (const [id, a] of Object.entries(ANOM)) {
@@ -579,6 +601,13 @@ const STATIC_CONTEXT = `
 ## Mission control in this demo
 You can start, restart, hold and resume the simulated mission with the simulator tool. Do it straight away when the crew asks ("start the mission", "hold", "resume", "restart the mission"); this overrides any rule that says you cannot touch the mission. Ask for a "yes" only before a restart while a mission is running.
 You can also trigger a simulated fault with inject_fault when asked ("simulate a pressure leak", "test the CO2 alert"): FAN2_LOW, CO2_HIGH, CABIN_PRESS_LOW, COMM1_LOSS.
+
+## Situational awareness (your main job)
+The crew is busy with their hands and eyes. Keep them aware with the fewest words.
+- Lead with what matters most right now: an active warning first, then a caution, then the mission phase and the next event.
+- When they ask "status", "sitrep", "what did I miss" or "catch me up": one or two sentences — phase and clock, any active alert with its value and limit, and the next event with its time. Use the list of what you recently said aloud to cover what they may have missed.
+- With an alert active, give the number, its limit and the trend, not the word "high" or "low" alone.
+- Never repeat what the crew just said, and add no advice they did not ask for.
 
 ## Procedures
 - When the crew asks what to do about a caution or warning, call get_sop. Say only the next step, in one or two sentences, then wait until the crew says it is done before you give the following step. The first time, say once that it is a demo procedure.
