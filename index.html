@@ -163,7 +163,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 61; // bump on every push; shown at the bottom of the page
+const VERSION = 62; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -306,7 +306,12 @@ $("oBench").onclick = async () => {
   sim.fired.add("CO2_HIGH"); sim.alerts.push({ id: "CO2_HIGH", text: ANOM.CO2_HIGH.text, level: "caution", acknowledged: false, saidAt: Date.now() });
   sim.env.co2 = 0.72; sim.rate.co2 = 0.02;
   const stamp = t => "[mission clock " + clock(sim.t) + "] " + t, nTests = BENCH.length;
-  const ask = async (m, msgs) => { const j = await openModel(msgs, ac.signal, m.id);
+  const ask = async (m, msgs) => {
+    let j;
+    for (let tries = 0; ; tries++) { // a provider with a requests-per-minute limit (Cerebras trial): wait and try the same task again
+      try { j = await openModel(msgs, ac.signal, m.id); break; }
+      catch (e) { if (ac.signal.aborted || tries >= 2 || !/429/.test(e.message)) throw e; $("oHint").textContent = "Provider asked to slow down. Waiting 15 seconds, then continuing with " + m.short + "…"; await sleep(15000); }
+    }
     return { text: j.content.filter(c => c.type === "text").map(c => c.text).join(" ").trim(), calls: j.content.filter(c => c.type === "tool_use") }; };
   $("oBench").textContent = "Stop test"; setState("thinking", "Model test running. Tap the button to stop it.");
   try {
