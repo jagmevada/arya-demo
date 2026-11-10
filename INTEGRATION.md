@@ -1,6 +1,6 @@
 # Arya voice demo: integration note for the office launch simulator
 
-Source: `jagmevada/arya-demo`, single file `index.html` (page version 36). Live page: https://jagmevada.github.io/arya-demo/
+Source: `jagmevada/arya-demo`, single file `index.html` (page version 37). Live page: https://jagmevada.github.io/arya-demo/
 
 This note describes what the web demo does, how to connect it to the office space launch simulator, and gives the reminder and situational-awareness features in a form that can be ported directly. All mission values, limits and procedures in the demo are placeholders written for the demo. None of them are flight data or ISRO procedures.
 
@@ -123,7 +123,32 @@ You can also remind and count down: when the crew asks "remind me when…", "tel
 
 Without these lines Claude refused ("I cannot set reminders, I only answer when asked").
 
-### 4.5 Behaviour to keep in mind
+### 4.5 Timed actions (added in page version 37)
+
+The crew can also ask Arya to do something later, not only to remind:
+
+- "After 30 seconds switch off all lights."
+- "At orbit insertion switch to the window camera."
+
+`set_reminder` takes an optional `action`: the tool to run and its input. At the set time the page runs that tool and Arya then says `message`, or says why the action did not work.
+
+```js
+// extra property in the set_reminder input schema
+action: { type: "object", properties: { tool: { type: "string", enum: TIMED_TOOLS }, input: { type: "object" } }, required: ["tool", "input"] }
+
+const TIMED_TOOLS = ["set_cabin_lights", "set_camera", "console_command", "acknowledge_alert"];
+
+// firing
+sim.reminders.filter(r => sim.t >= r.at).forEach(r => {
+  if (!r.run) return say(r.text, true);
+  const res = runTool(r.run.tool, r.run.input || {});
+  say(res.done === false ? "The timed action did not work: " + (res.reason || "no change") + "." : r.text, true);
+});
+```
+
+Calls and mission control (start, hold, jump) are deliberately not allowed on a timer. Prompt line: "You can also act on a timer … call set_reminder with action; never offer a reminder instead of doing it." Tested in a simulated run only, not yet by voice.
+
+### 4.6 Behaviour to keep in mind
 
 - Seconds are mission-clock seconds. If the simulator runs faster than real time, a "10 second" reminder passes faster in real time.
 - A reminder set relative to an event that already passed is refused with a reason, and Arya says so.

@@ -139,7 +139,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 36; // bump on every push; shown at the bottom of the page
+const VERSION = 37; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -461,7 +461,11 @@ function simTick() {
   if (!link !== !sim.link && sim.t > 0 && sim.t < T_SPLASH && !active("COMM1_LOSS")) say(link ? "Acquisition of signal, " + link + "." : "Loss of signal.", false);
   sim.link = link;
   if (sim.reminders.some(r => sim.t >= r.at)) { // reminders and countdowns the crew asked for
-    sim.reminders.filter(r => sim.t >= r.at).forEach(r => say(r.text, true));
+    sim.reminders.filter(r => sim.t >= r.at).forEach(r => {
+      if (!r.run) return say(r.text, true);
+      const res = runTool(r.run.tool, r.run.input || {}); // a timed action the crew asked for
+      say(res.done === false ? "The timed action did not work: " + (res.reason || "no change") + "." : r.text, true);
+    });
     sim.reminders = sim.reminders.filter(r => sim.t < r.at);
   }
   for (const [id, a] of Object.entries(ANOM)) if (sim.t >= a.t && !sim.fired.has(id)) {
@@ -526,6 +530,7 @@ function jumpTo(name) { // move the mission clock to just before a major event, 
 for (const n of JUMPS) { const o = document.createElement("option"); o.value = n; o.textContent = n[0].toUpperCase() + n.slice(1); $("simJump").append(o); }
 $("simJump").onchange = () => { const n = $("simJump").value; $("simJump").value = ""; if (n) { history = []; jumpTo(n); renderHud(); } };
 const COMMANDS = Object.values(ANOM).map(a => a.fix);
+const TIMED_TOOLS = ["set_cabin_lights", "set_camera", "console_command", "acknowledge_alert"]; // what Arya may do later on a timer; calls and mission control stay out
 function injectFault(id) { // fire a fault now, by button or by voice; a fixed fault can be fired again
   if (!ANOM[id]) return { done: false, reason: "unknown fault", faults: Object.keys(ANOM) };
   if (active(id)) return { done: false, reason: "that fault is already active" };
@@ -559,9 +564,10 @@ const TOOLS = [
     input_schema: { type: "object", properties: { action: { type: "string", enum: ["call", "hang_up"] }, contact: { type: "string", enum: CONTACTS } }, required: ["action"] } },
   { name: "simulator", description: "Control the simulated mission on the crew's request: start or restart it, hold the clock, or resume it. quick=true starts at T minus 10 seconds with no mission brief (\"quick start\", \"skip the brief\", \"start from T minus 10\"); quick=false starts at T minus 50 seconds with the brief; leave it out to use the setting on the page. action=jump with event moves the clock to just before that major event (\"jump to re-entry\", \"go to orbit insertion\"); re-entry is the event \"entry interface\".",
     input_schema: { type: "object", properties: { action: { type: "string", enum: ["start", "restart", "hold", "resume", "jump"] }, quick: { type: "boolean" }, event: { type: "string", enum: JUMPS } }, required: ["action"] } },
-  { name: "set_reminder", description: "Make yourself speak a reminder later, without being asked again. Either give event + seconds_before (\"remind me 10 seconds before orbit insertion\"), or in_seconds from now (\"remind me in 2 minutes to check the valve\"). With event + repeat_every_seconds you count down aloud at that interval until the event. Seconds are mission-clock seconds. message is the exact words you will say then, in the crew's language; leave it out for a countdown.",
+  { name: "set_reminder", description: "Make yourself speak a reminder later, without being asked again. Either give event + seconds_before (\"remind me 10 seconds before orbit insertion\"), or in_seconds from now (\"remind me in 2 minutes to check the valve\"). With event + repeat_every_seconds you count down aloud at that interval until the event. Seconds are mission-clock seconds. message is the exact words you will say then, in the crew's language; leave it out for a countdown. To DO something at that time by yourself (\"after 30 seconds switch off all lights\", \"switch to the window camera at orbit insertion\"), also give action = the tool to run and its input; then message is what you say once it is done.",
     input_schema: { type: "object", properties: { event: { type: "string", enum: MILESTONES.map(m => m[1]).filter(n => !/callout|status|final count|mission brief/.test(n)) },
-      seconds_before: { type: "number" }, in_seconds: { type: "number" }, repeat_every_seconds: { type: "number" }, message: { type: "string" } } } },
+      seconds_before: { type: "number" }, in_seconds: { type: "number" }, repeat_every_seconds: { type: "number" }, message: { type: "string" },
+      action: { type: "object", properties: { tool: { type: "string", enum: TIMED_TOOLS }, input: { type: "object" } }, required: ["tool", "input"] } } } },
   { name: "cancel_reminders", description: "Cancel all pending reminders and countdowns.", input_schema: { type: "object", properties: {} } },
   { name: "inject_fault", description: "Demo control: trigger a simulated fault now, when the crew or the demo operator asks to simulate or test an alert.",
     input_schema: { type: "object", properties: { alert_id: { type: "string", enum: Object.keys(ANOM) } }, required: ["alert_id"] } },
@@ -598,21 +604,23 @@ function runTool(name, a) {
     case "inject_fault": return injectFault(a.alert_id);
     case "cancel_reminders": { const n = sim.reminders.length; sim.reminders = []; return { done: true, cancelled: n }; }
     case "set_reminder": {
+      if (a.action && !TIMED_TOOLS.includes(a.action.tool)) return { done: false, reason: "that action cannot be put on a timer", allowed: TIMED_TOOLS };
+      const run = a.action && !a.repeat_every_seconds ? a.action : null, doneText = a.message || "Timed action done.";
       const ev = a.event && MILESTONES.find(m => m[1] === a.event), left = x => { x = Math.round(x); const m = Math.floor(x / 60), sec = x % 60; return x < 120 ? x + " seconds" : m + " minutes" + (sec ? " " + sec + " seconds" : ""); };
       let list = [];
       if (ev) {
         if (ev[0] <= sim.t) return { done: false, reason: a.event + " has already happened" };
-        const mk = x => ({ at: ev[0] - x, text: a.message && !a.repeat_every_seconds ? a.message : left(x) + " to " + a.event + "." });
+        const mk = x => ({ at: ev[0] - x, run, text: run ? doneText : a.message && !a.repeat_every_seconds ? a.message : left(x) + " to " + a.event + "." });
         if (a.repeat_every_seconds > 0) { // ponytail: at most 40 callouts, no closer than 5 s apart, so speech can keep up
           const step = Math.max(5, a.repeat_every_seconds);
           for (let x = Math.floor((ev[0] - sim.t - 1) / step) * step; x >= step && list.length < 40; x -= step) list.push(mk(x));
-        } else list.push(mk(Math.max(0, a.seconds_before ?? 10)));
+        } else list.push(mk(Math.max(0, a.seconds_before ?? (run ? 0 : 10))));
         list = list.filter(r => r.at > sim.t);
         if (!list.length) return { done: false, reason: "too late: " + a.event + " is only " + fmtDur(ev[0] - sim.t) + " away" };
-      } else if (a.in_seconds > 0) list.push({ at: sim.t + a.in_seconds, text: a.message || "Reminder." });
+      } else if (a.in_seconds > 0) list.push({ at: sim.t + a.in_seconds, run, text: run ? doneText : a.message || "Reminder." });
       else return { done: false, reason: "give an event, or in_seconds" };
       sim.reminders.push(...list);
-      return { done: true, reminders_set: list.length, first_in: fmtDur(list[0].at - sim.t), note: "You will speak them by yourself; confirm in a few words." };
+      return { done: true, reminders_set: list.length, first_in: fmtDur(list[0].at - sim.t), note: run ? "The action will run by itself at that time and you will then say the message; confirm in a few words." : "You will speak them by yourself; confirm in a few words." };
     }
     case "simulator":
       if (a.action === "jump") return jumpTo(a.event);
@@ -711,7 +719,7 @@ The Console Telemetry tools are a live mission simulator on this page: HLVM3 lau
 Mission clock now: ${clock(sim.t)}${sim.running ? "" : sim.started ? " (on hold)" : " (mission not started yet)"}. Phase: ${phaseAt(sim.t)}.
 Active alerts right now: ${open || "none"}. When the crew says "it" or "that alert", they mean the latest of these.
 You do speak on your own: this console announces every new caution, warning and mission event aloud in your voice the moment it happens, without the crew asking. Never say that you can only speak when spoken to. If the crew asks you to tell them about alerts, say that you already call them out as they come.
-You can also remind and count down: when the crew asks "remind me when…", "tell me 10 seconds before…", "count down every 10 seconds", call set_reminder straight away. Never say you cannot set a reminder or count down. Reminders pending now: ${sim.reminders.length}.
+You can also remind and count down: when the crew asks "remind me when…", "tell me 10 seconds before…", "count down every 10 seconds", call set_reminder straight away. Never say you cannot set a reminder or count down. You can also act on a timer: for "after 30 seconds switch off all lights" or "at orbit insertion switch to the window camera", call set_reminder with action (lights, camera, a console command, or acknowledging an alert); never offer a reminder instead of doing it. Reminders pending now: ${sim.reminders.length}.
 You recently said aloud, on your own: ${sim.said.map(t => '"' + t + '"').join(" ") || "nothing"}. If the crew answers one of these (for example "confirmed" or "yes, done"), acknowledge it in a few words.
 Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to you, even without your name." : "always listening — follow the When to speak rules strictly."}
 
