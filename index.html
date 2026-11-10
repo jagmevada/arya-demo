@@ -148,7 +148,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 39; // bump on every push; shown at the bottom of the page
+const VERSION = 40; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -182,11 +182,18 @@ $("oLoad").onclick = async () => {
     let list = (await r.json()).data || [];
     const withTools = list.filter(m => m.supported_parameters?.includes("tools"));
     if (withTools.length) list = withTools; // a local server lists no parameters: show everything
-    list.sort((a, b) => (OPEN_FAMILIES.test(b.id) - OPEN_FAMILIES.test(a.id)) || a.id.localeCompare(b.id));
+    for (const m of list) { // size is read from the name ("27b"); the provider does not publish it as a field
+      const hit = /(?:^|[-_ :\/])(\d+(?:\.\d+)?)b(?:$|[-_ :\/])/i.exec(m.id) || /(?:^|[-_ :\/(])(\d+(?:\.\d+)?)b(?:$|[-_ :\/)])/i.exec(m.name || "");
+      m.b = hit ? +hit[1] : null;
+      m.gb = m.b ? Math.round(m.b * 0.6 + 2) : null; // ponytail: rough 4-bit estimate, 0.6 GB per billion parameters plus 2 GB; check the real file size before buying hardware
+      m.short = (m.name || m.id).replace(/^[^:]*:\s*/, "").replace(/^.*\//, "");
+    }
+    const rank = m => (OPEN_FAMILIES.test(m.id) ? 0 : 2) + (m.b ? 0 : 1); // open models with a known size first
+    list.sort((a, b) => rank(a) - rank(b) || (a.b || 0) - (b.b || 0) || a.id.localeCompare(b.id));
     const pick = $("oPick"); pick.innerHTML = ""; pick.append(new Option("Choose a model (" + list.length + ")…", ""));
-    for (const m of list) pick.append(new Option(m.id + (m.context_length ? "  ·  " + Math.round(m.context_length / 1000) + "k ctx" : ""), m.id));
+    for (const m of list) pick.append(new Option(m.short + (m.b ? "  ·  " + m.b + "B  ·  ~" + m.gb + " GB" + (m.gb > 40 ? "  ✗ over 40" : "  ✓") : "  ·  size not in name"), m.id));
     pick.hidden = false;
-    $("oHint").textContent = list.length + " models" + (withTools.length ? " with tool calling" : "") + ". Open-weight families come first. The list does not show memory need: for a 40 GB budget choose about 20B to 35B parameter models.";
+    $("oHint").textContent = list.length + " models" + (withTools.length ? " with tool calling" : "") + ", smallest first. B = billion parameters. GB = my rough estimate of memory for a 4-bit copy (0.6 GB per billion + 2 GB), not a published figure. ✓ fits your 40 GB brain budget.";
   } catch (e) { $("oHint").textContent = "Could not load the list: " + e.message; }
 };
 $("oPick").onchange = () => { if ($("oPick").value) { $("oModel").value = $("oPick").value; store.set("oModel", $("oPick").value); } };
