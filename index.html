@@ -79,7 +79,8 @@
       <label>Open model: API base URL<input id="oUrl" autocomplete="off" placeholder="https://openrouter.ai/api/v1"></label>
       <label>Open model: API key (leave empty for a local server)<input id="oKey" type="password" autocomplete="off"></label>
       <label>Open model: model name, exactly as the provider lists it<input id="oModel" autocomplete="off" placeholder="copy it from the provider's model list"></label>
-      <div class="hint">Pick a model that supports tool calling. For a local server use its address, for example http://localhost:11434/v1.</div>
+      <div class="row"><button id="oLoad">Load model list</button><select id="oPick" hidden></select></div>
+      <div class="hint" id="oHint">Tap "Load model list" to choose from the provider's models that support tool calling. For a local server use its address, for example http://localhost:11434/v1.</div>
     </div>
     <label>Claude model
       <select id="model">
@@ -147,7 +148,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 38; // bump on every push; shown at the bottom of the page
+const VERSION = 39; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -170,6 +171,25 @@ for (const [k, d] of Object.entries(fields)) {
   });
 }
 $("resetPrompt").onclick = () => { $("prompt").value = aryaDefault; try { localStorage.removeItem("arya.prompt"); } catch {} };
+// Fetch the provider's model list so the exact name can be picked instead of typed
+const OPEN_FAMILIES = /qwen|gpt-oss|glm|gemma|mistral|llama|deepseek|phi|nemotron|kimi|granite|hermes/i; // open-weight families, listed first
+$("oLoad").onclick = async () => {
+  const base = $("oUrl").value.trim().replace(/\/+$/, ""), key = $("oKey").value.trim();
+  $("oHint").textContent = "Loading…";
+  try {
+    const r = await fetchT(base + "/models", { headers: key ? { "Authorization": "Bearer " + key } : {} }, 20000);
+    if (!r.ok) throw new Error(r.status + " " + (await r.text()).slice(0, 120));
+    let list = (await r.json()).data || [];
+    const withTools = list.filter(m => m.supported_parameters?.includes("tools"));
+    if (withTools.length) list = withTools; // a local server lists no parameters: show everything
+    list.sort((a, b) => (OPEN_FAMILIES.test(b.id) - OPEN_FAMILIES.test(a.id)) || a.id.localeCompare(b.id));
+    const pick = $("oPick"); pick.innerHTML = ""; pick.append(new Option("Choose a model (" + list.length + ")…", ""));
+    for (const m of list) pick.append(new Option(m.id + (m.context_length ? "  ·  " + Math.round(m.context_length / 1000) + "k ctx" : ""), m.id));
+    pick.hidden = false;
+    $("oHint").textContent = list.length + " models" + (withTools.length ? " with tool calling" : "") + ". Open-weight families come first. The list does not show memory need: for a 40 GB budget choose about 20B to 35B parameter models.";
+  } catch (e) { $("oHint").textContent = "Could not load the list: " + e.message; }
+};
+$("oPick").onchange = () => { if ($("oPick").value) { $("oModel").value = $("oPick").value; store.set("oModel", $("oPick").value); } };
 const showBrain = () => { $("openCfg").hidden = $("brain").value !== "open"; };
 $("brain").addEventListener("change", showBrain); showBrain();
 if (!$("cKey").value || ($("brain").value === "open" ? !$("oModel").value : !$("aKey").value)) $("settings").open = true;
