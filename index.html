@@ -79,7 +79,8 @@
       <label>Open model: API base URL<input id="oUrl" autocomplete="off" placeholder="https://openrouter.ai/api/v1"></label>
       <label>Open model: API key (leave empty for a local server)<input id="oKey" type="password" autocomplete="off"></label>
       <label>Open model: model name, exactly as the provider lists it<input id="oModel" autocomplete="off" placeholder="copy it from the provider's model list"></label>
-      <div class="row"><button id="oLoad">Load model list</button><select id="oPick" hidden></select></div>
+      <div class="row"><button id="oLoad">Load model list</button><label style="margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap"><input id="oFree" type="checkbox" style="width:auto;margin:0">Free only</label></div>
+      <select id="oPick" hidden></select>
       <div class="hint" id="oHint">Tap "Load model list" to choose from the provider's models that support tool calling. For a local server use its address, for example http://localhost:11434/v1.</div>
     </div>
     <label>Claude model
@@ -148,7 +149,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 40; // bump on every push; shown at the bottom of the page
+const VERSION = 41; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -190,12 +191,22 @@ $("oLoad").onclick = async () => {
     }
     const rank = m => (OPEN_FAMILIES.test(m.id) ? 0 : 2) + (m.b ? 0 : 1); // open models with a known size first
     list.sort((a, b) => rank(a) - rank(b) || (a.b || 0) - (b.b || 0) || a.id.localeCompare(b.id));
+    openList = list; drawModels(withTools.length > 0);
+  } catch (e) { $("oHint").textContent = "Could not load the list: " + e.message; }
+};
+let openList = [];
+const isFree = m => /:free$/.test(m.id) || (m.pricing && +m.pricing.prompt === 0 && +m.pricing.completion === 0);
+function drawModels(tools) {
+  {
+    const list = $("oFree").checked ? openList.filter(isFree) : openList;
     const pick = $("oPick"); pick.innerHTML = ""; pick.append(new Option("Choose a model (" + list.length + ")…", ""));
     for (const m of list) pick.append(new Option(m.short + (m.b ? "  ·  " + m.b + "B  ·  ~" + m.gb + " GB" + (m.gb > 40 ? "  ✗ over 40" : "  ✓") : "  ·  size not in name"), m.id));
     pick.hidden = false;
-    $("oHint").textContent = list.length + " models" + (withTools.length ? " with tool calling" : "") + ", smallest first. B = billion parameters. GB = my rough estimate of memory for a 4-bit copy (0.6 GB per billion + 2 GB), not a published figure. ✓ fits your 40 GB brain budget.";
-  } catch (e) { $("oHint").textContent = "Could not load the list: " + e.message; }
-};
+    $("oHint").textContent = list.length + ($("oFree").checked ? " free" : "") + " models" + (tools ? " with tool calling" : "") + ", smallest first. B = billion parameters. GB = my rough estimate of memory for a 4-bit copy (0.6 GB per billion + 2 GB), not a published figure. ✓ fits your 40 GB brain budget.";
+  }
+}
+$("oFree").checked = store.get("oFree", "") === "1";
+$("oFree").onchange = () => { store.set("oFree", $("oFree").checked ? "1" : ""); if (openList.length) drawModels(openList.some(m => m.supported_parameters)); };
 $("oPick").onchange = () => { if ($("oPick").value) { $("oModel").value = $("oPick").value; store.set("oModel", $("oPick").value); } };
 const showBrain = () => { $("openCfg").hidden = $("brain").value !== "open"; };
 $("brain").addEventListener("change", showBrain); showBrain();
