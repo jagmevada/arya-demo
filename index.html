@@ -88,7 +88,7 @@
       <label id="oUrlRow">Open model: API base URL<input id="oUrl" autocomplete="off" placeholder="https://…/v1"></label>
       <label>Open model: API key (leave empty for a local server)<input id="oKey" type="password" autocomplete="off"></label>
       <label>Open model: model name, exactly as the provider lists it<input id="oModel" autocomplete="off" placeholder="copy it from the provider's model list"></label>
-      <div class="row"><button id="oLoad">Load model list</button><label style="margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap"><input id="oFree" type="checkbox" style="width:auto;margin:0">Free only</label><button id="oBench" hidden>Test listed models</button></div>
+      <div class="row"><button id="oLoad">Load model list</button><label style="margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap"><input id="oFree" type="checkbox" style="width:auto;margin:0">Free only</label><label style="margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap"><input id="oFit" type="checkbox" style="width:auto;margin:0" checked>Open, 12B to 40 GB</label><button id="oBench" hidden>Test listed models</button></div>
       <select id="oPick" hidden></select>
       <label>Price to estimate cost, in $ per million tokens (optional; copy it from the provider's price list)<input id="oPrice" type="number" min="0" step="0.05" placeholder="for example 0.5"></label>
       <div class="hint" id="oUse"></div>
@@ -163,7 +163,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 57; // bump on every push; shown at the bottom of the page
+const VERSION = 58; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -213,7 +213,8 @@ let openList = [];
 const isFree = m => /:free$/.test(m.id) || (m.pricing && +m.pricing.prompt === 0 && +m.pricing.completion === 0);
 function drawModels(tools) {
   {
-    const list = $("oFree").checked ? openList.filter(isFree) : openList;
+    let list = $("oFree").checked ? openList.filter(isFree) : openList.filter(m => !isFree(m) || !openList.some(p => p.id === m.id.replace(/:free$/, "") && p !== m)); // hide a free twin when the paid copy is listed
+    if ($("oFit").checked) list = list.filter(m => OPEN_FAMILIES.test(m.id) && m.b >= 12 && m.gb <= 40); // only real candidates for the 40 GB brain budget
     const pick = $("oPick"); pick.innerHTML = ""; pick.append(new Option("Choose a model (" + list.length + ")…", ""));
     for (const m of list) pick.append(new Option(m.short + (m.b ? "  ·  " + m.b + "B  ·  ~" + m.gb + " GB" + (m.gb > 40 ? "  ✗ over 40" : "  ✓") : "  ·  size not in name"), m.id));
     pick.hidden = false; $("oBench").hidden = false;
@@ -233,7 +234,7 @@ const BENCH = [
 let benchStop = null;
 $("oBench").onclick = async () => {
   if (benchStop) { benchStop.abort(); return; }
-  const models = [...$("oPick").options].map(o => openList.find(m => m.id === o.value)).filter(m => m && m.b >= 7 && m.gb <= 40).slice(0, 15);
+  const models = [...$("oPick").options].map(o => openList.find(m => m.id === o.value)).filter(m => m && m.b >= 7 && m.gb <= 40).slice(0, 25);
   if (!models.length) { $("oHint").textContent = "No listed model between 7B and the 40 GB budget to test."; return; }
   const ac = benchStop = new AbortController(), rows = [];
   $("oBench").textContent = "Stop test";
@@ -261,6 +262,8 @@ $("oBench").onclick = async () => {
   $("oHint").textContent = "Test finished: results are at the top of the conversation log. Use Copy log to share them.";
   $("oBench").textContent = "Test listed models"; benchStop = null;
 };
+$("oFit").checked = store.get("oFit", "1") === "1";
+$("oFit").onchange = () => { store.set("oFit", $("oFit").checked ? "1" : "0"); if (openList.length) drawModels(openList.some(m => m.supported_parameters)); };
 $("oFree").checked = store.get("oFree", "") === "1";
 $("oFree").onchange = () => { store.set("oFree", $("oFree").checked ? "1" : ""); if (openList.length) drawModels(openList.some(m => m.supported_parameters)); };
 $("oPick").onchange = () => { if ($("oPick").value) { $("oModel").value = $("oPick").value; store.set("oModel", $("oPick").value); saveModelForProv(); } };
