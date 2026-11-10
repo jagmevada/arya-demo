@@ -163,7 +163,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 63; // bump on every push; shown at the bottom of the page
+const VERSION = 64; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -242,7 +242,7 @@ function hindiFault(t, min = 8) {
 const wordsIn = t => t.split(/\s+/).filter(Boolean).length;
 const callOf = (r, n) => r.calls.find(c => c.name === n)?.input;
 const near = (v, x, tol) => v !== "" && v != null && Math.abs(Number(v) - x) <= tol; // some models send numbers as text ("30")
-const lightsOff = i => i && (i.all_off === true || ((i.zones_off || []).length >= 6 && (i.spots_off || []).length >= 2));
+const lightsOff = i => i && (i.all_off === true || i.all_off === "true" || ((i.zones_off || []).length >= 6 && (i.spots_off || []).length >= 2)); // some models send true as text
 const BENCH = [
   // --- tools: does it act, with the right tool and the right input? ---
   { cat: "Tools", name: "reminder in 30 s", ask: "Remind me in 30 seconds to check the valve.",
@@ -858,8 +858,9 @@ function runTool(name, a) {
     }
     case "set_cabin_lights": {
       const set = (arr, ids, v) => (ids || []).forEach(i => { if (i >= 1 && i <= arr.length) arr[i - 1] = v; });
-      if (a.all_off) { L.spots.fill(false); L.zones.fill(false); }
-      if (a.all_on) { L.spots.fill(true); L.zones.fill(true); }
+      const yes = v => v === true || v === "true"; // a model may send true or false as text; the text "false" must not count as yes
+      if (yes(a.all_off)) { L.spots.fill(false); L.zones.fill(false); }
+      if (yes(a.all_on)) { L.spots.fill(true); L.zones.fill(true); }
       set(L.spots, a.spots_on, true); set(L.spots, a.spots_off, false); set(L.zones, a.zones_on, true); set(L.zones, a.zones_off, false);
       if (a.dim_percent != null) L.dim = Math.min(100, Math.max(0, Math.round(a.dim_percent / 5) * 5));
       return { done: true, lights: snapshot("lights") };
