@@ -102,7 +102,7 @@
         <option value="claude-opus-5-5">claude-opus-5-5</option>
       </select></label>
     <label>Reply language
-      <select id="replyLang"><option value="auto">Same as the crew (Hindi or English)</option><option value="en">Always English (Hindi is still understood)</option></select></label>
+      <select id="replyLang"><option value="auto">Same as the crew (Hindi or English)</option><option value="en">Always English (Hindi is still understood)</option><option value="hi2">Hindi by translation (brain works in English, answer is translated)</option></select></label>
     <label>Sonic voice ID (Indian-accent English)<input id="voice" autocomplete="off"></label>
     <div class="hint">Default: Aarti (Indian-accent female). Pick any voice ID from play.cartesia.ai and paste it here.</div>
     <label>Pronunciation list (WRITTEN=spoken, one per line)<textarea id="lex" style="min-height:120px"></textarea></label>
@@ -163,7 +163,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 56; // bump on every push; shown at the bottom of the page
+const VERSION = 57; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -705,8 +705,8 @@ const TOOLS = [
       seconds_before: { type: "number" }, in_seconds: { type: "number" }, repeat_every_seconds: { type: "number" }, message: { type: "string" },
       action: { type: "object", properties: { tool: { type: "string", enum: TIMED_TOOLS }, input: { type: "object" } }, required: ["tool", "input"] } } } },
   { name: "cancel_reminders", description: "Cancel all pending reminders and countdowns.", input_schema: { type: "object", properties: {} } },
-  { name: "set_reply_language", description: "Change, for the rest of the session and later ones, which language you reply in. Call it when the crew asks (\"switch to English only\", \"answer in Hindi again\", \"reply in my language\"). english = always English, Hindi still understood. auto = same language as the crew.",
-    input_schema: { type: "object", properties: { language: { type: "string", enum: ["english", "auto"] } }, required: ["language"] } },
+  { name: "set_reply_language", description: "Change, for the rest of the session and later ones, which language the crew hears. Call it when the crew asks (\"switch to English only\", \"answer in Hindi again\", \"reply in my language\"). english = always English, Hindi still understood. hindi = you keep writing English and the console translates your answer into Hindi for a crew member who spoke Hindi.",
+    input_schema: { type: "object", properties: { language: { type: "string", enum: ["english", "hindi"] } }, required: ["language"] } },
   { name: "inject_fault", description: "Demo control: trigger a simulated fault now, when the crew or the demo operator asks to simulate or test an alert.",
     input_schema: { type: "object", properties: { alert_id: { type: "string", enum: Object.keys(ANOM) } }, required: ["alert_id"] } },
   { name: "acknowledge_alert", description: "Acknowledge a caution or warning by id, or all.", input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
@@ -741,9 +741,9 @@ function runTool(name, a) {
     }
     case "inject_fault": return injectFault(a.alert_id);
     case "set_reply_language": {
-      if (!["english", "auto"].includes(a.language)) return { done: false, reason: "unknown language setting" };
-      $("replyLang").value = a.language === "english" ? "en" : "auto"; store.set("replyLang", $("replyLang").value); // saved, so it outlasts the short conversation memory
-      return { done: true, reply_language: a.language === "english" ? "always English from now on" : "same language as the crew from now on" };
+      if (!["english", "hindi", "auto"].includes(a.language)) return { done: false, reason: "unknown language setting" };
+      $("replyLang").value = a.language === "english" ? "en" : "hi2"; store.set("replyLang", $("replyLang").value); // saved, so it outlasts the short conversation memory
+      return { done: true, reply_language: a.language === "english" ? "always English from now on" : "Hindi for a crew member who speaks Hindi; you still write English and the console translates it" };
     }
     case "cancel_reminders": { const n = sim.reminders.length; sim.reminders = []; return { done: true, cancelled: n }; }
     case "set_reminder": {
@@ -878,7 +878,7 @@ You can also remind and count down: when the crew asks "remind me when…", "tel
 You recently said aloud, on your own: ${sim.said.map(t => '"' + t + '"').join(" ") || "nothing"}. If the crew answers one of these (for example "confirmed" or "yes, done"), acknowledge it in a few words.
 Input mode: ${mode === "ptt" ? "push-to-talk — every utterance is addressed to you, even without your name." : "always listening — follow the When to speak rules strictly."}
 
-${$("replyLang").value === "en" ? '## Reply language (overrides the Language rules above)\nAlways reply in English, in every reply, even when the crew speaks Hindi. You still understand Hindi fully and act on it.\n\n' : ""}## Sir in this reply
+${$("replyLang").value !== "auto" ? '## Reply language (overrides the Language rules above)\nAlways reply in English, in every reply, even when the crew speaks Hindi. You still understand Hindi fully and act on it.\n\n' : ""}## Sir in this reply
 ${sirNow ? 'You may say "sir" once in this reply if it sounds natural ("Yes, sir", "जी sir").' : 'Do NOT say "sir" (or "सर") anywhere in this reply.'}
 
 ## Live console snapshot
@@ -888,6 +888,34 @@ ${JSON.stringify({ ...snapshot(), camera: sim.camera, next_events: nextEvents(),
     next_ground_station: nextContacts(20).find(c => !/relay|recovery/.test(c.via)) || "none before splashdown; contact is by relay satellite, then the recovery ship",
     safety_now: Object.fromEntries(sim.alerts.filter(a => active(a.id)).map(a => [a.id, SOPS[a.id].safety()])) })}`;
 }
+// ---------- English → Hindi, as a separate step ----------
+const HINDI_RULES = `You translate one short spoken reply of a spacecraft voice assistant from English into Hindi. Output only the Hindi sentence(s), nothing else.
+- Natural, polite, everyday spoken Hindi in Devanagari, correctly spelled with full word endings (करता है, होता है, रहे हैं). The speaker is a woman (कर सकती हूँ). Address the crew as आप, never तुम.
+- Keep these exactly as they are, in English letters: all numbers and units, names, abbreviations and technical terms (CO2, O2, kPa, MET, ISTRAC, S200, L110, C25, cabin, pressure, oxygen, lights, camera, zone, spot, valve, scrubber, fan, suit loop, visor, orbit, altitude, velocity, re-entry, parachute, splashdown, alert, caution, warning, reminder, step, console, mission, sir).
+- Same meaning, same length, no additions, no explanations, no quotation marks.`;
+async function translateHi(text, signal) {
+  if (openBrain()) {
+    const base = $("oUrl").value.trim().replace(/\/+$/, ""), key = $("oKey").value.trim();
+    const r = await fetchT(base + "/chat/completions", { method: "POST",
+      headers: { "Content-Type": "application/json", ...(key ? { "Authorization": "Bearer " + key } : {}) },
+      body: JSON.stringify({ model: $("oModel").value.trim(), max_tokens: 600, temperature: 0,
+        ...(/openrouter\.ai/.test(base) ? { reasoning: { effort: "low" } } : {}),
+        messages: [{ role: "system", content: HINDI_RULES }, { role: "user", content: text }] }) }, 30000, signal);
+    if (!r.ok) throw new Error("LLM: " + r.status + " " + (await r.text()).slice(0, 120));
+    const j = await r.json(); addUsage(base, j.usage);
+    const out = String(j.choices?.[0]?.message?.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    if (!/[\u0900-\u097F]/.test(out)) throw new Error("no Hindi came back");
+    return out;
+  }
+  const r = await fetchT("https://api.anthropic.com/v1/messages", { method: "POST",
+    headers: { "x-api-key": $("aKey").value.trim(), "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true", "content-type": "application/json" },
+    body: JSON.stringify({ model: $("model").value, max_tokens: 600, system: HINDI_RULES, messages: [{ role: "user", content: text }] }) }, 30000, signal);
+  if (!r.ok) throw new Error("Claude: " + r.status + " " + (await r.text()).slice(0, 120));
+  const out = (await r.json()).content.filter(c => c.type === "text").map(c => c.text).join("").trim();
+  if (!/[\u0900-\u097F]/.test(out)) throw new Error("no Hindi came back");
+  return out;
+}
+
 // ---------- brain: Claude, or any open model behind an OpenAI-compatible API ----------
 const openBrain = () => $("brain").value === "open";
 const brainModel = () => openBrain() ? $("oModel").value.trim() : $("model").value;
@@ -1113,14 +1141,24 @@ async function finishTurn() {
     }
     log("You", text);
     status("Arya is thinking… (tap to cancel)");
-    const reply = await think(text, ac.signal), t2 = performance.now();
+    let reply = await think(text, ac.signal), trMs = 0;
     if (turn !== ac) return;
+    // Hindi by translation: the brain worked in English (its strong side, and its memory stays English); a separate
+    // one-shot call with no conversation memory turns the finished answer into Hindi. Tools and reasoning are untouched.
+    if ($("replyLang").value === "hi2" && /[\u0900-\u097F]/.test(text) && reply.replace(/[.\s…]/g, "")) {
+      const t = performance.now();
+      try { status("Arya is putting it in Hindi…"); const hi = await translateHi(reply, ac.signal); record.push(clock(sim.t) + " [English before translation] " + reply); reply = hi; }
+      catch (e) { if (ac.signal.aborted) throw e; record.push(clock(sim.t) + " [translation failed, spoken in English] " + e.message); }
+      trMs = performance.now() - t;
+      if (turn !== ac) return;
+    }
+    const t2 = performance.now();
     log("Arya", reply);
     let first = null;
     if (reply.replace(/[.\s…]/g, "")) { setState("speaking", "Tap the button to stop Arya."); first = await speak(reply, ac.signal); }
     if (turn !== ac) return;
     turn = null;
-    setState("idle", "Ink " + secs(t1 - t0) + " · " + brainName() + " " + secs(t2 - t1) + (claudeCalls > 1 ? " (" + claudeCalls + " calls)" : "") + (first === null ? "" : " · Sonic " + secs(first)));
+    setState("idle", "Ink " + secs(t1 - t0) + " · " + brainName() + " " + secs(t2 - t1) + (claudeCalls > 1 ? " (" + claudeCalls + " calls)" : "") + (trMs ? ", of which Hindi " + secs(trMs) : "") + (first === null ? "" : " · Sonic " + secs(first)));
   } catch (e) {
     if (turn !== ac) return; // cancelled by the crew: the new state is already set
     turn = null; stopAudio(); setState("idle"); status(e.message, true);
