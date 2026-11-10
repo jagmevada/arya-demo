@@ -120,7 +120,7 @@ You are **Arya**, the voice assistant of the crew display console in the HLVM3 c
 
 ## Language
 - Answer in the language of the crew member's latest request: Hindi → answer in Hindi, English → answer in English. Switch automatically every turn; never refuse a language switch.
-- Write Hindi in Devanagari script. Keep technical words that crews say in English (oxygen, altitude, ground station, console) in English, as Hinglish speakers do.
+- Write Hindi in Devanagari script. Keep technical words that crews say in English (oxygen, altitude, ground station, console) in English, as Hinglish speakers do. Standard terms and abbreviations (CO2, O2, MET, ISTRAC, S200) stay in English exactly as written, never translated or respelled in Hindi.
 - Any other language → answer in English.
 - You are female: in Hindi use feminine forms ("मैं बता सकती हूँ").
 - Your name may be transcribed as "Arya", "आर्या" or "आरिया".
@@ -161,7 +161,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 47; // bump on every push; shown at the bottom of the page
+const VERSION = 48; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -879,7 +879,7 @@ async function claude(messages, signal) {
 // used by OpenRouter, Groq, Together, and by local servers such as Ollama, llama.cpp and vLLM.
 function toOpenMessages(messages) {
   // Extra Hindi guidance for open models: a field log showed misspelled Devanagari for English-origin words
-  const hindi = "\n\n## Hindi spelling\nWhen you answer in Hindi, use short everyday words and check each word is a real, correctly spelled Hindi word. Write every English-origin or technical word in English letters, never in Devanagari: lights, camera, zone, spot, valve, scrubber, fan, pressure, oxygen, orbit, alert, caution, warning, mission. Example: \"सभी lights बंद कर दी हैं।\"";
+  const hindi = "\n\n## Hindi spelling\nWhen you answer in Hindi, use short everyday words and check each word is a real, correctly spelled Hindi word. Standard terms and abbreviations are always said in English, exactly as in an English reply, never translated or respelled in Hindi: CO2, O2, kPa, MET, AOS, LOS, ISTRAC, S200, L110, C25. Write every English-origin or technical word in English letters, never in Devanagari: lights, camera, zone, spot, valve, scrubber, fan, pressure, oxygen, orbit, alert, caution, warning, mission. Example: \"सभी lights बंद कर दी हैं।\"";
   const out = [{ role: "system", content: $("prompt").value + STATIC_CONTEXT + hindi + demoContext() }];
   for (const m of messages) {
     if (typeof m.content === "string") { out.push({ role: m.role, content: m.content }); continue; }
@@ -966,7 +966,7 @@ function spoken(text) { // apply the pronunciation list; the log keeps the writt
   // Open models often ignore "no markdown, no symbols": clean the text so the voice does not read them out
   text = text.replace(/[*_#`]+/g, "").replace(/[‑–—]/g, "-").replace(/\s?°\s?C\b/g, " degrees").replace(/\s?%/g, " percent")
     .replace(/\bkm\/s\b/g, "kilometres per second").replace(/\bm\/s\b/g, "metres per second").replace(/(\d)\s?km\b/g, "$1 kilometres")
-    .replace(/\bCO[₂2](?![A-Za-z0-9])/g, /[\u0900-\u097F]/.test(text) ? "सी ओ टू" : "C O two") // spelled out so a Hindi voice does not read the 2 as "do".replace(/\bO[₂2](?![A-Za-z0-9])/g, "oxygen").replace(/T\s?-\s?minus/gi, "T minus");
+    .replace(/\bCO[₂2](?![A-Za-z0-9])/g, "C O two") // the 2 is written as a word so a Hindi voice does not read it as "do"; standard terms stay English in every language.replace(/\bO[₂2](?![A-Za-z0-9])/g, "oxygen").replace(/T\s?-\s?minus/gi, "T minus");
   for (const line of $("lex").value.split("\n")) {
     const [w, say] = line.split("=").map(x => x.trim());
     if (w && say) try { text = text.replace(new RegExp("\\b" + w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "g"), say); } catch {}
