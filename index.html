@@ -163,7 +163,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 60; // bump on every push; shown at the bottom of the page
+const VERSION = 61; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -221,46 +221,140 @@ function drawModels(tools) {
     $("oHint").textContent = list.length + ($("oFree").checked ? " free" : "") + " models" + (tools ? " with tool calling" : "") + ". Those that fit " + maxGb() + " GB come first, biggest first; models under about 12B are too weak for Arya. B = billion parameters. GB = my rough estimate of memory for a 4-bit copy (0.6 GB per billion + 2 GB), not a published figure. ✓ fits your " + maxGb() + " GB brain budget.";
   }
 }
-// ---------- model test: the same three Arya tasks on every listed model that fits the budget ----------
-// Only the model's first reply is judged and no tool is really run, so the mission is not disturbed.
-const BENCH = [
-  { name: "status", ask: "What is our altitude, and what is the next event?",
-    ok: r => { const t = r.text, w = t.split(/\s+/).filter(Boolean).length; return t && !/^[.\s…]*$/.test(t) && w <= 60 && !/[*#]/.test(t) ? "" : !t || /^[.\s…]*$/.test(t) ? "no answer" : w > 60 ? "too long (" + w + " words)" : "markdown"; } },
-  { name: "reminder", ask: "Remind me in 30 seconds to check the valve.",
-    ok: r => { const c = r.calls.find(c => c.name === "set_reminder"); return c && Math.abs((c.input.in_seconds || 0) - 30) <= 5 ? "" : c ? "wrong time" : "no set_reminder call"; } },
-  { name: "Hindi action", ask: "ज़ोन 5 की light बंद कर दीजिए।",
-    ok: r => { const c = r.calls.find(c => c.name === "set_cabin_lights"); return c && (c.input.zones_off || []).includes(5) ? "" : c ? "wrong lights input" : "no lights call"; } },
+// ---------- model test: 23 Arya tasks on every listed model that fits the budget ----------
+// Each task is judged on the model's first reply and no tool is really run. The tasks run against a frozen copy of the
+// mission (in orbit at T+33:20 with an unacknowledged CO2 caution), so every model sees exactly the same situation.
+// Pattern check for the Hindi faults seen in field logs. It catches known slips; it cannot prove a sentence is good Hindi.
+const HINDI_BAD = [
+  [/[؀-ۿঀ-৿઀-૿଀-ൿ]/, "letters from another script"],
+  [/(?:हो|कर|रह|देख|गिर|दे|जा|बता|चल|आ|मिल|रख)त(?=\s+(?:है|हैं|हौ|हूँ|हौय|जाइए|रहूँगी|ना)|[\s।,.!?]|$)/, "clipped verb ending"],
+  [/(?:^|\s)हौ(?=[\s।,.!?]|$)|हौय|गयौ|बतौनी/, "dialect verb form"],
+  [/रहें\s+हैं|आपकें|केलिए|(?:^|\s)जे\s|(?:^|\s)क\s+तरफ|(?:^|\s)वें\s/, "misspelled common word"],
+  [/(?:कर|देख|रख|बता|सुन|दे|ले)ीए/, "misspelled polite form"],
+  [/तुम|(?:^|\s)तू(?=\s)|(?:कर|बोल|चाह|देख|बता)ो(?=[\s।,.!?]|$)/, "तुम form, not आप"],
 ];
+function hindiFault(t, min = 8) {
+  const words = (t.match(/[ऀ-ॿ]+/g) || []).length;
+  if (words < min) return words ? "too little Hindi (" + words + " words)" : "no Hindi in the answer";
+  for (const [re, why] of HINDI_BAD) { const m = re.exec(t); if (m) return why + " \"" + m[0].trim() + "\""; }
+  return "";
+}
+const wordsIn = t => t.split(/\s+/).filter(Boolean).length;
+const callOf = (r, n) => r.calls.find(c => c.name === n)?.input;
+const near = (v, x, tol) => typeof v === "number" && Math.abs(v - x) <= tol;
+const lightsOff = i => i && (i.all_off === true || ((i.zones_off || []).length >= 6 && (i.spots_off || []).length >= 2));
+const BENCH = [
+  // --- tools: does it act, with the right tool and the right input? ---
+  { cat: "Tools", name: "reminder in 30 s", ask: "Remind me in 30 seconds to check the valve.",
+    ok: r => { const c = callOf(r, "set_reminder"); return !c ? "no set_reminder call" : near(c.in_seconds, 30, 5) && !c.action ? "" : "wrong reminder input"; } },
+  { cat: "Tools", name: "reminder before event", ask: "Remind me 10 seconds before the deorbit burn.",
+    ok: r => { const c = callOf(r, "set_reminder"); return !c ? "no set_reminder call" : c.event === "deorbit burn" && near(c.seconds_before ?? 10, 10, 5) && !c.repeat_every_seconds ? "" : "wrong event or time"; } },
+  { cat: "Tools", name: "countdown", ask: "Count down every 30 seconds until the deorbit burn.",
+    ok: r => { const c = callOf(r, "set_reminder"); return !c ? "no set_reminder call" : c.event === "deorbit burn" && near(c.repeat_every_seconds, 30, 5) ? "" : "no repeat interval"; } },
+  { cat: "Tools", name: "timed action", ask: "After 20 seconds, switch off all the lights.",
+    ok: r => { const c = callOf(r, "set_reminder"); return !c ? "no set_reminder call" : c.action?.tool !== "set_cabin_lights" || !lightsOff(c.action.input) ? "no lights action on the timer" : !near(c.in_seconds, 20, 5) ? "wrong delay" : c.message ? "" : "no sentence for when it is done"; } },
+  { cat: "Tools", name: "two timed actions", ask: "After 30 seconds switch off all lights and change the camera to crew close-up.",
+    ok: r => { const a = r.calls.filter(c => c.name === "set_reminder").map(c => c.input.action?.tool); return a.includes("set_cabin_lights") && a.includes("set_camera") ? "" : "did not schedule both actions"; } },
+  { cat: "Tools", name: "lights, English", ask: "Turn spot 2 on, zone 5 off, and set brightness to 50 percent.",
+    ok: r => { const c = callOf(r, "set_cabin_lights"); return !c ? "no lights call" : (c.spots_on || []).includes(2) && (c.zones_off || []).includes(5) && c.dim_percent === 50 ? "" : "wrong lights input"; } },
+  { cat: "Tools", name: "lights, Hindi", ask: "ज़ोन 5 की light बंद कर दीजिए।",
+    ok: r => { const c = callOf(r, "set_cabin_lights"); return !c ? "no lights call" : (c.zones_off || []).includes(5) ? "" : "wrong lights input"; } },
+  { cat: "Tools", name: "camera", ask: "Show me the window camera.",
+    ok: r => callOf(r, "set_camera")?.view === "window" ? "" : "no window camera call" },
+  { cat: "Tools", name: "acknowledge alert", ask: "Acknowledge that caution.",
+    ok: r => { const c = callOf(r, "acknowledge_alert"); return c && /CO2_HIGH|all|carbon/i.test(c.id || "") ? "" : "no acknowledge call"; } },
+  { cat: "Tools", name: "procedure lookup", ask: "What should I do about this caution?",
+    ok: r => callOf(r, "get_sop") ? "" : "did not fetch the procedure" },
+  { cat: "Tools", name: "fix on yes", ask: [["user", "What should I do about this caution?"], ["assistant", "This is a demo procedure. Step 2: switch the carbon dioxide scrubber from bed A to bed B. Shall I do that?"], ["user", "Yes, do it."]],
+    ok: r => callOf(r, "console_command")?.command === "switch_co2_scrubber_b" ? "" : "did not run the fix command" },
+  { cat: "Tools", name: "hold mission", ask: "Hold the mission clock.",
+    ok: r => callOf(r, "simulator")?.action === "hold" ? "" : "no hold call" },
+  { cat: "Tools", name: "asks before a call", ask: "Call the Flight Director.",
+    ok: r => callOf(r, "video_call") ? "called without asking for a yes" : r.text ? "" : "no answer" },
+  // --- Hindi: is the Hindi it writes correct? ---
+  { cat: "Hindi", name: "Hindi long answer", ask: "Suit loop क्या करता है और cabin pressure कैसे maintain होता है? तीन वाक्य में समझाइए।", ok: r => hindiFault(r.text) },
+  { cat: "Hindi", name: "Hindi short answer", ask: "अभी altitude कितना है?", ok: r => hindiFault(r.text, 2) || (/400/.test(r.text) ? "" : "altitude value missing") },
+  { cat: "Hindi", name: "Hindi over 3 turns", turns: ["अभी हम कहाँ पर हैं?", "Cabin का हाल बताइए, सब ठीक है?", "इस CO2 caution के बारे में समझाइए, यह क्यों आता है?"], ok: r => hindiFault(r.text, 4) },
+  // --- style and knowledge: short, clean, sensible ---
+  { cat: "Style", name: "status, short and clean", ask: "What is our altitude, and what is the next event?",
+    ok: r => !r.text || /^[.\s…]*$/.test(r.text) ? "no answer" : !/400/.test(r.text) ? "altitude value missing" : wordsIn(r.text) > 45 ? "too long (" + wordsIn(r.text) + " words)" : /[*#]/.test(r.text) ? "markdown" : /simulated/i.test(r.text) ? "says simulated" : "" },
+  { cat: "Style", name: "how safe", ask: "How safe is it right now with this CO2 caution?",
+    ok: r => /0\.7/.test(r.text) || callOf(r, "get_sop") ? "" : "no value and no procedure lookup" },
+  { cat: "Style", name: "English stays English", ask: "What is the cabin pressure?",
+    ok: r => /[ऀ-ॿ]/.test(r.text) ? "answered in Hindi" : /101/.test(r.text) ? "" : "pressure value missing" },
+  { cat: "Style", name: "no self-correction", ask: [["user", "What is the carbon dioxide level?"], ["assistant", "Carbon dioxide is 0.55 percent."], ["user", "And now?"]],
+    ok: r => /correct|earlier|previous|mistake|wrong|sorry|apolog|गलत|पिछली/i.test(r.text) ? "corrects its earlier answer" : /0\.7/.test(r.text) ? "" : "current value missing" },
+  { cat: "Style", name: "technical knowledge", ask: "How does a carbon dioxide scrubber work? Two sentences.",
+    ok: r => wordsIn(r.text) < 10 ? "no real explanation" : /absorb|chemical|lithium|remov|bed|filter/i.test(r.text) ? "" : "explanation off the point" },
+  { cat: "Style", name: "declines off-topic", ask: "Write me a poem about cricket.",
+    ok: r => r.calls.length ? "called a tool" : wordsIn(r.text) > 40 ? "did not decline (long answer)" : r.text ? "" : "no answer" },
+  { cat: "Style", name: "unclear speech", ask: "uh the the",
+    ok: r => r.calls.length ? "acted on unclear speech" : wordsIn(r.text) > 30 ? "long answer to unclear speech" : "" },
+];
+const BENCH_CATS = ["Tools", "Hindi", "Style"];
 let benchStop = null;
 $("oBench").onclick = async () => {
   if (benchStop) { benchStop.abort(); return; }
+  if (turn || utt) { $("oHint").textContent = "Wait until Arya is idle, then start the test."; return; }
   const models = [...$("oPick").options].map(o => openList.find(m => m.id === o.value)).filter(m => m && m.b >= 7 && m.gb <= maxGb()).slice(0, 25);
   if (!models.length) { $("oHint").textContent = "No listed model between 7B and the " + maxGb() + " GB budget to test."; return; }
-  const ac = benchStop = new AbortController(), rows = [];
-  $("oBench").textContent = "Stop test";
-  for (const [i, m] of models.entries()) {
-    const row = { m, pass: 0, times: [], notes: [] };
-    for (const t of BENCH) {
+  const ac = benchStop = turn = new AbortController(), rows = [], langWas = $("replyLang").value, real = sim; // turn = ac: Arya stays quiet, and a tap on the talk button stops the test
+  $("replyLang").value = "auto"; // the Hindi tasks must show the model's own Hindi, not the English-only or translation mode
+  simRestart(false, true); // frozen test situation, the same for every model
+  Object.assign(sim, { started: true, t: 2000, said: ["Caution. Cabin carbon dioxide high."] });
+  MILESTONES.forEach(m => { if (m[0] < sim.t) sim.fired.add(m[1]); });
+  sim.fired.add("CO2_HIGH"); sim.alerts.push({ id: "CO2_HIGH", text: ANOM.CO2_HIGH.text, level: "caution", acknowledged: false, saidAt: Date.now() });
+  sim.env.co2 = 0.72; sim.rate.co2 = 0.02;
+  const stamp = t => "[mission clock " + clock(sim.t) + "] " + t, nTests = BENCH.length;
+  const ask = async (m, msgs) => { const j = await openModel(msgs, ac.signal, m.id);
+    return { text: j.content.filter(c => c.type === "text").map(c => c.text).join(" ").trim(), calls: j.content.filter(c => c.type === "tool_use") }; };
+  $("oBench").textContent = "Stop test"; setState("thinking", "Model test running. Tap the button to stop it.");
+  try {
+    for (const [i, m] of models.entries()) {
+      const row = { m, pass: {}, n: {}, times: [], notes: [], errs: 0 };
+      BENCH_CATS.forEach(c => { row.pass[c] = 0; row.n[c] = 0; });
+      for (const [k, t] of BENCH.entries()) {
+        if (ac.signal.aborted || row.errs >= 3) break;
+        $("oHint").textContent = "Testing model " + (i + 1) + "/" + models.length + ": " + m.short + ", task " + (k + 1) + "/" + nTests + " (" + t.name + ")…";
+        row.n[t.cat]++;
+        try {
+          let why = "";
+          if (t.turns) { // a short conversation: each reply is checked, and fed back as the model's own earlier words
+            const msgs = [];
+            for (const q of t.turns) { msgs.push({ role: "user", content: stamp(q) }); const t0 = performance.now(), r = await ask(m, msgs); row.times.push(performance.now() - t0);
+              why = t.ok(r); if (why) break; msgs.push({ role: "assistant", content: [{ type: "text", text: r.text }] }); await sleep(isFree(m) ? 1500 : 250); }
+          } else {
+            const msgs = typeof t.ask === "string" ? [{ role: "user", content: stamp(t.ask) }]
+              : t.ask.map(([role, text]) => role === "user" ? { role, content: stamp(text) } : { role, content: [{ type: "text", text }] });
+            const t0 = performance.now(), r = await ask(m, msgs); row.times.push(performance.now() - t0);
+            why = t.ok(r);
+          }
+          row.errs = 0;
+          if (why) row.notes.push(t.name + ": " + why); else row.pass[t.cat]++;
+        } catch (e) {
+          if (ac.signal.aborted) break;
+          row.errs++; row.notes.push(t.name + ": " + (/429/.test(e.message) ? "rate-limited" : /402|credit/.test(e.message) ? "needs credits" : e.message.slice(0, 70)));
+        }
+        await sleep(isFree(m) ? 1500 : 250); // ponytail: fixed gap; free copies have tight request limits
+      }
+      if (row.errs >= 3) row.notes.push("stopped early after 3 errors in a row");
+      row.done = BENCH_CATS.reduce((a, c) => a + row.n[c], 0); row.passed = BENCH_CATS.reduce((a, c) => a + row.pass[c], 0);
+      row.pct = row.done ? Math.round(row.passed / nTests * 100) : 0;
+      row.avg = row.times.length ? row.times.reduce((a, b) => a + b, 0) / row.times.length : Infinity; row.max = Math.max(0, ...row.times);
+      if (row.done) rows.push(row);
       if (ac.signal.aborted) break;
-      $("oHint").textContent = "Testing " + (i + 1) + "/" + models.length + ": " + m.short + ", " + t.name + "…";
-      const t0 = performance.now();
-      try {
-        const j = await openModel([{ role: "user", content: "[mission clock " + clock(sim.t) + "] " + t.ask }], ac.signal, m.id);
-        const why = t.ok({ text: j.content.filter(c => c.type === "text").map(c => c.text).join(" ").trim(), calls: j.content.filter(c => c.type === "tool_use") });
-        row.times.push(performance.now() - t0);
-        if (why) row.notes.push(t.name + ": " + why); else row.pass++;
-      } catch (e) { row.notes.push(t.name + ": " + (/429/.test(e.message) ? "rate-limited" : /402/.test(e.message) ? "needs credits" : e.message.slice(0, 60))); }
-      await sleep(1500); // ponytail: fixed gap to stay under free-tier request limits; raise it if many rows say rate-limited
     }
-    row.avg = row.times.length ? row.times.reduce((a, b) => a + b, 0) / row.times.length : Infinity;
-    rows.push(row);
-    if (ac.signal.aborted) break;
+  } finally {
+    sim = real; sim.last = Date.now(); $("replyLang").value = langWas; renderHud();
+    rows.sort((a, b) => b.pct - a.pct || a.avg - b.avg);
+    if (rows.length) log("Model test", "score · Tools · Hindi · Style · average and slowest reply · model (size)\n" + rows.map(r =>
+      r.pct + "% · " + BENCH_CATS.map(c => c + " " + r.pass[c] + "/" + BENCH.filter(t => t.cat === c).length).join(" · ") + " · " + (isFinite(r.avg) ? secs(r.avg) + " avg, " + secs(r.max) + " max" : "no reply") +
+      " · " + r.m.short + " (" + r.m.b + "B, ~" + r.m.gb + " GB)" + (r.done < nTests ? " · only " + r.done + " of " + nTests + " tasks run" : "") + (r.notes.length ? "\n   failed: " + r.notes.join("; ") : "")).join("\n"));
+    $("oHint").textContent = (ac.signal.aborted ? "Test stopped. " : "Test finished. ") + "Results are at the top of the conversation log. Use Copy log to share them.";
+    $("oBench").textContent = "Test listed models"; benchStop = null;
+    if (turn === ac) turn = null;
+    setState(micOn ? "idle" : "off", "Model test " + (ac.signal.aborted ? "stopped." : "finished."));
   }
-  rows.sort((a, b) => b.pass - a.pass || a.avg - b.avg);
-  log("Model test", "passed of " + BENCH.length + " · average time · model (size) · problems\n" + rows.map(r =>
-    r.pass + "/" + BENCH.length + " · " + (isFinite(r.avg) ? secs(r.avg) : "no reply") + " · " + r.m.short + " (" + r.m.b + "B, ~" + r.m.gb + " GB)" + (r.notes.length ? " · " + r.notes.join("; ") : "")).join("\n"));
-  $("oHint").textContent = "Test finished: results are at the top of the conversation log. Use Copy log to share them.";
-  $("oBench").textContent = "Test listed models"; benchStop = null;
 };
 function maxGb() { return +$("oMax").value || 45; } // memory the brain may use, out of the 64 GB shared with speech
 $("oMax").value = store.get("oMax", "45");
