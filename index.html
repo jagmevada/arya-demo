@@ -79,7 +79,7 @@
       <label>Open model: API base URL<input id="oUrl" autocomplete="off" placeholder="https://openrouter.ai/api/v1"></label>
       <label>Open model: API key (leave empty for a local server)<input id="oKey" type="password" autocomplete="off"></label>
       <label>Open model: model name, exactly as the provider lists it<input id="oModel" autocomplete="off" placeholder="copy it from the provider's model list"></label>
-      <div class="row"><button id="oLoad">Load model list</button><label style="margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap"><input id="oFree" type="checkbox" style="width:auto;margin:0">Free only</label></div>
+      <div class="row"><button id="oLoad">Load model list</button><label style="margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap"><input id="oFree" type="checkbox" style="width:auto;margin:0">Free only</label><button id="oBench" hidden>Test listed models</button></div>
       <select id="oPick" hidden></select>
       <div class="hint" id="oHint">Tap "Load model list" to choose from the provider's models that support tool calling. For a local server use its address, for example http://localhost:11434/v1.</div>
     </div>
@@ -149,7 +149,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 42; // bump on every push; shown at the bottom of the page
+const VERSION = 43; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -202,10 +202,51 @@ function drawModels(tools) {
     const list = $("oFree").checked ? openList.filter(isFree) : openList;
     const pick = $("oPick"); pick.innerHTML = ""; pick.append(new Option("Choose a model (" + list.length + ")…", ""));
     for (const m of list) pick.append(new Option(m.short + (m.b ? "  ·  " + m.b + "B  ·  ~" + m.gb + " GB" + (m.gb > 40 ? "  ✗ over 40" : "  ✓") : "  ·  size not in name"), m.id));
-    pick.hidden = false;
+    pick.hidden = false; $("oBench").hidden = false;
     $("oHint").textContent = list.length + ($("oFree").checked ? " free" : "") + " models" + (tools ? " with tool calling" : "") + ". Those that fit 40 GB come first, biggest first; models under about 12B are too weak for Arya. B = billion parameters. GB = my rough estimate of memory for a 4-bit copy (0.6 GB per billion + 2 GB), not a published figure. ✓ fits your 40 GB brain budget.";
   }
 }
+// ---------- model test: the same three Arya tasks on every listed model that fits the budget ----------
+// Only the model's first reply is judged and no tool is really run, so the mission is not disturbed.
+const BENCH = [
+  { name: "status", ask: "What is our altitude, and what is the next event?",
+    ok: r => { const t = r.text, w = t.split(/\s+/).filter(Boolean).length; return t && !/^[.\s…]*$/.test(t) && w <= 60 && !/[*#]/.test(t) ? "" : !t || /^[.\s…]*$/.test(t) ? "no answer" : w > 60 ? "too long (" + w + " words)" : "markdown"; } },
+  { name: "reminder", ask: "Remind me in 30 seconds to check the valve.",
+    ok: r => { const c = r.calls.find(c => c.name === "set_reminder"); return c && Math.abs((c.input.in_seconds || 0) - 30) <= 5 ? "" : c ? "wrong time" : "no set_reminder call"; } },
+  { name: "Hindi action", ask: "ज़ोन 5 की light बंद कर दीजिए।",
+    ok: r => { const c = r.calls.find(c => c.name === "set_cabin_lights"); return c && (c.input.zones_off || []).includes(5) ? "" : c ? "wrong lights input" : "no lights call"; } },
+];
+let benchStop = null;
+$("oBench").onclick = async () => {
+  if (benchStop) { benchStop.abort(); return; }
+  const models = [...$("oPick").options].map(o => openList.find(m => m.id === o.value)).filter(m => m && m.b >= 7 && m.gb <= 40).slice(0, 15);
+  if (!models.length) { $("oHint").textContent = "No listed model between 7B and the 40 GB budget to test."; return; }
+  const ac = benchStop = new AbortController(), rows = [];
+  $("oBench").textContent = "Stop test";
+  for (const [i, m] of models.entries()) {
+    const row = { m, pass: 0, times: [], notes: [] };
+    for (const t of BENCH) {
+      if (ac.signal.aborted) break;
+      $("oHint").textContent = "Testing " + (i + 1) + "/" + models.length + ": " + m.short + ", " + t.name + "…";
+      const t0 = performance.now();
+      try {
+        const j = await openModel([{ role: "user", content: "[mission clock " + clock(sim.t) + "] " + t.ask }], ac.signal, m.id);
+        const why = t.ok({ text: j.content.filter(c => c.type === "text").map(c => c.text).join(" ").trim(), calls: j.content.filter(c => c.type === "tool_use") });
+        row.times.push(performance.now() - t0);
+        if (why) row.notes.push(t.name + ": " + why); else row.pass++;
+      } catch (e) { row.notes.push(t.name + ": " + (/429/.test(e.message) ? "rate-limited" : /402/.test(e.message) ? "needs credits" : e.message.slice(0, 60))); }
+      await sleep(1500); // ponytail: fixed gap to stay under free-tier request limits; raise it if many rows say rate-limited
+    }
+    row.avg = row.times.length ? row.times.reduce((a, b) => a + b, 0) / row.times.length : Infinity;
+    rows.push(row);
+    if (ac.signal.aborted) break;
+  }
+  rows.sort((a, b) => b.pass - a.pass || a.avg - b.avg);
+  log("Model test", "passed of " + BENCH.length + " · average time · model (size) · problems\n" + rows.map(r =>
+    r.pass + "/" + BENCH.length + " · " + (isFinite(r.avg) ? secs(r.avg) : "no reply") + " · " + r.m.short + " (" + r.m.b + "B, ~" + r.m.gb + " GB)" + (r.notes.length ? " · " + r.notes.join("; ") : "")).join("\n"));
+  $("oHint").textContent = "Test finished: results are at the top of the conversation log. Use Copy log to share them.";
+  $("oBench").textContent = "Test listed models"; benchStop = null;
+};
 $("oFree").checked = store.get("oFree", "") === "1";
 $("oFree").onchange = () => { store.set("oFree", $("oFree").checked ? "1" : ""); if (openList.length) drawModels(openList.some(m => m.supported_parameters)); };
 $("oPick").onchange = () => { if ($("oPick").value) { $("oModel").value = $("oPick").value; store.set("oModel", $("oPick").value); } };
@@ -814,7 +855,7 @@ function toOpenMessages(messages) {
   }
   return out;
 }
-async function openModel(messages, signal) {
+async function openModel(messages, signal, model = $("oModel").value.trim()) {
   const base = $("oUrl").value.trim().replace(/\/+$/, ""), key = $("oKey").value.trim();
   for (let attempt = 0; ; attempt++) {
     let r;
@@ -822,7 +863,8 @@ async function openModel(messages, signal) {
       r = await fetchT(base + "/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(key ? { "Authorization": "Bearer " + key } : {}) }, // a local server needs no key
-        body: JSON.stringify({ model: $("oModel").value.trim(), max_tokens: 700, messages: toOpenMessages(messages),
+        body: JSON.stringify({ model, max_tokens: 2000, messages: toOpenMessages(messages), // room for a thinking model: its silent reasoning counts against the limit, and a low limit left the answer empty
+          ...(/openrouter\.ai/.test(base) ? { reasoning: { effort: "low" } } : {}), // [UNVERIFIED] OpenRouter's switch for less silent reasoning, for speed; not sent to other servers
           tools: TOOLS.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.input_schema } })) }),
       }, 60000, signal);
     } catch (e) { if (signal?.aborted) throw e; throw new Error("LLM: could not reach " + base + " (" + e.message + "). Check the URL; a browser also needs the server to allow cross-origin requests."); }
@@ -1150,6 +1192,10 @@ talk.addEventListener("pointerdown", async e => {
     if (mode !== "ptt") return;
   }
   if (mode === "ptt" && state === "idle") {
+    if (micStream?.getAudioTracks()[0]?.readyState === "ended") { // the system closed the mic (other app, screen lock): a sure sign, so reopen it
+      try { await startAudio(true); status("Microphone was closed by the phone and is open again. Tap or hold to talk."); } catch (err) { status(err.message, true); }
+      return;
+    }
     try { talk.setPointerCapture(e.pointerId); } catch {}
     pressAt = performance.now(); latched = false; utt = startUtterance([]); setState("listening");
   }
