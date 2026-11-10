@@ -131,7 +131,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 19; // bump on every push; shown at the bottom of the page
+const VERSION = 20; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -639,7 +639,7 @@ function stopAudio() { for (const s of playing) { try { s.stop(); } catch {} } p
 async function speak(text, signal) { // resolves with ms until first audio
   const t0 = performance.now();
   if (ctx.state !== "running") await ctx.resume().catch(() => {});
-  const r = await fetchT("https://api.cartesia.ai/tts/bytes", {
+  const ask = async () => fetchT("https://api.cartesia.ai/tts/bytes", {
     method: "POST",
     headers: { "Authorization": "Bearer " + await getToken(), "Cartesia-Version": CARTESIA_VERSION, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -648,6 +648,12 @@ async function speak(text, signal) { // resolves with ms until first audio
       output_format: { container: "raw", encoding: "pcm_s16le", sample_rate: TTS_RATE },
     }),
   }, 15000, signal);
+  let r;
+  for (let attempt = 0; ; attempt++) { // a dropped connection or a busy server gets two more tries before Arya goes silent
+    try { r = await ask(); if (r.ok || ![429, 500, 502, 503].includes(r.status) || attempt >= 2) break; }
+    catch (e) { if (signal?.aborted || attempt >= 2) throw new Error("Sonic voice request failed (" + e.message + "). Check the network."); }
+    await sleep(400 * (attempt + 1));
+  }
   if (!r.ok) throw new Error("Sonic: " + r.status + " " + (await r.text()).slice(0, 200));
   let at = 0, first = null, last = null, pend = new Uint8Array(0);
   const play = bytes => {
