@@ -122,7 +122,7 @@ You are **Arya**, the voice assistant of the crew display console in the HLVM3 c
 - Answer in the language of the crew member's latest request: Hindi → answer in Hindi, English → answer in English. Switch automatically every turn; never refuse a language switch.
 - Write Hindi in Devanagari script. Keep technical words that crews say in English (oxygen, altitude, ground station, console) in English, as Hinglish speakers do. Standard terms and abbreviations (CO2, O2, MET, ISTRAC, S200) stay in English exactly as written, never translated or respelled in Hindi.
 - Any other language → answer in English.
-- You are female: in Hindi use feminine forms ("मैं बता सकती हूँ").
+- You are female: in Hindi use feminine forms ("मैं बता सकती हूँ"). Address the crew with the respectful "आप", never "तुम".
 - Your name may be transcribed as "Arya", "आर्या" or "आरिया".
 
 ## When to speak
@@ -161,7 +161,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 49; // bump on every push; shown at the bottom of the page
+const VERSION = 50; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -814,6 +814,7 @@ You are a crewmate, not a menu system. Talk the way a calm, friendly flight engi
 - If a request is cut off or unclear, ask naturally what they meant, using what you did catch ("The cabin pressure, you mean?").
 - When the crew is chatting and nothing is needed, keep it brief and let them get back to work. Safety comes first: with an active warning, give the safety information first and keep chat to a minimum.
 - Never use the word "simulated" unless the crew asks whether the data is real.
+- Be respectful to the crew. In Hindi always use the respectful "आप" forms (आप, आपको, आपका, कीजिए, बताइए); never "तुम", "तुम्हें", "तू" or their verb forms (करो, चाहो, बोलो). Say "sir" now and then, in English or Hindi ("जी sir", "Yes, sir"), about once in every three or four replies, not in every sentence.
 - Still short: one or two sentences. Natural does not mean long.
 
 ## Technical questions
@@ -1072,7 +1073,14 @@ async function finishTurn() {
     if (turn !== ac) return;
     if (!text) { // say why, so a mic or permission fault is not mistaken for a speech-recognition miss
       turn = null; const st = uStat, sec = (st.n * 4096 / ctx.sampleRate).toFixed(1);
-      if (st.n < 3) { setState("idle"); const d = "No sound reached the app from the microphone: " + micDiag() + ", permission " + await micPermission() + "."; status(d + " Restarting the mic; tap again.", true); log("Error", d); startAudio(true).catch(e => status(e.message, true)); } // repair after the fact; a check before the turn gave false alarms
+      if (st.n < 3) { // no sound frames arrived during the press
+        setState("idle");
+        const gone = micStream?.getAudioTracks()[0]?.readyState !== "live" || performance.now() - lastAudioAt > 5000;
+        const d = "No sound reached the app from the microphone: " + micDiag() + ", permission " + await micPermission() + ".";
+        log("Error", d);
+        if (gone) { status(d + " Restarting the mic; tap again.", true); startAudio(true).catch(e => status(e.message, true)); }
+        else status("The phone paused the mic for a moment, as it can when Arya starts or stops speaking. Tap and speak again.", true); // field logs: frames stall ~2 s, then return on their own; a restart only adds delay
+      }
       else if (st.peak < 0.004) { setState("idle"); status("The mic gave only silence for " + sec + " s. Tap and speak again.", true); log("Error", "Silent mic: " + micDiag()); }
       else setState("idle", "Heard " + sec + " s of sound but no words. Speak a little longer or closer.");
       return;
