@@ -516,7 +516,7 @@ function renderHud() {
   const row = (k, v, cls = "") => `<div><span>${k}</span><b class="${cls}">${v}</b></div>`;
   const open = sim.alerts.filter(a => active(a.id)), warn = open.some(a => a.level === "warning");
   $("hud").innerHTML =
-    row("Clock", clock(sim.t) + (sim.running ? "" : " HOLD")) + row("Sim speed", (sim.t < 0 ? 1 : sim.speed) + "×") + row("Phase", m.phase) + row("Next", m.next_event) +
+    row("Clock", clock(sim.t) + (sim.running ? "" : " HOLD")) + row("Sim speed", sim.t < 0 ? "countdown 1×, then " + sim.speed + "×" : sim.speed + "×") + row("Phase", m.phase) + row("Next", m.next_event) +
     row("Altitude", m.altitude) + row("Velocity", m.velocity) + row("G load", m.g_load.replace(", weightless", "")) +
     row("Position", m.latitude + " " + m.longitude) + row("Over", m.over) + row("Rev", sim.t >= T_INSERT ? m.revolution : "—") +
     row("Contact", m.ground_contact.replace("in contact via ", ""), m.ground_contact.startsWith("in") ? "ok" : "") +
@@ -755,7 +755,7 @@ $("test").onclick = async () => {
   const ac = turn = new AbortController();
   try {
     try { ctx ||= new (window.AudioContext || window.webkitAudioContext)(); await ctx.resume(); } catch {}
-    log("Test", "Page version 13. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
+    log("Test", "Page version 14. Mic API: " + (navigator.mediaDevices?.getUserMedia ? "yes" : "NO") + ", secure: " + isSecureContext);
     const micOk = await step("Microphone access", async () => { await startAudio(); return "allowed"; });
     setState("thinking", "Running test… (tap the button to cancel)"); // keeps the mic from starting a turn during the test
     if (micOk) await step("Microphone sound", async () => {
