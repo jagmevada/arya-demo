@@ -135,7 +135,7 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 25; // bump on every push; shown at the bottom of the page
+const VERSION = 26; // bump on every push; shown at the bottom of the page
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -747,8 +747,8 @@ async function finishTurn() {
     if (turn !== ac) return;
     if (!text) { // say why, so a mic or permission fault is not mistaken for a speech-recognition miss
       turn = null; const st = uStat, sec = (st.n * 4096 / ctx.sampleRate).toFixed(1);
-      if (st.n < 3) { setState("idle"); status("No sound reached the app from the microphone (" + await micPermission() + " permission). Tap the button again; it will restart the mic.", true); lastAudioAt = 0; }
-      else if (st.peak < 0.004) { setState("idle"); status("Microphone was silent for " + sec + " s (level " + st.peak.toFixed(4) + "). Check that no other app is using the mic, then tap again.", true); lastAudioAt = 0; }
+      if (st.n < 3) { setState("idle"); const d = "No sound reached the app from the microphone: " + micDiag() + ", permission " + await micPermission() + "."; status(d + " Tap again.", true); log("Error", d); }
+      else if (st.peak < 0.004) { setState("idle"); status("Microphone was silent for " + sec + " s (level " + st.peak.toFixed(4) + "). Check that no other app is using the mic, then tap again.", true); log("Error", "Silent mic: " + micDiag()); }
       else setState("idle", "Heard " + sec + " s of sound but no words. Speak a little longer or closer.");
       return;
     }
@@ -818,7 +818,11 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 let micStream = null, micNodes = [], lastAudioAt = 0;
-const micAlive = () => micOn && micStream?.getAudioTracks()[0]?.readyState === "live" && !micStream.getAudioTracks()[0].muted && performance.now() - lastAudioAt < 1500;
+// ponytail: "muted" is not used as a failure sign — some phones report it on a working mic
+const micAlive = () => micOn && micStream?.getAudioTracks()[0]?.readyState === "live" && performance.now() - lastAudioAt < 1500;
+const micDiag = () => { const t = micStream?.getAudioTracks()[0]; // facts for a bug report, shown when the mic misbehaves
+  return "audio " + (ctx?.state || "none") + ", mic track " + (t ? t.readyState + (t.muted ? " muted" : "") : "none") + ", last sound frame " + (lastAudioAt ? Math.round(performance.now() - lastAudioAt) + " ms ago" : "never") + ", " + (ctx?.sampleRate || "?") + " Hz"; };
+let micRetryAt = 0;
 async function micPermission() { try { return (await navigator.permissions.query({ name: "microphone" })).state; } catch { return "unknown"; } }
 async function startAudio(force) { // force = rebuild the mic chain after the system stopped it (screen lock, phone call, other app)
   if (micOn && !force) return;
@@ -916,9 +920,12 @@ talk.addEventListener("pointerdown", async e => {
     if (mode !== "ptt") return;
   }
   if (mode === "ptt" && state === "idle") {
-    if (!micAlive()) { // the system took the mic away: get it back first, then ask for the tap again
-      try { status((await ensureMic()) ? "Microphone restarted. Tap or hold again to talk." : "Microphone gives no sound (" + await micPermission() + " permission). Run Test in Settings.", true); }
-      catch (err) { status(err.message, true); }
+    if (!micAlive() && performance.now() - micRetryAt > 10000) { // the system took the mic away: get it back first, then ask for the tap again
+      micRetryAt = performance.now(); // one repair try per 10 s; after that the turn goes ahead anyway, so this check can never lock the crew out
+      try {
+        if (await ensureMic()) status("Microphone restarted. Tap or hold again to talk.");
+        else { const d = "Mic check failed: " + micDiag() + ", permission " + await micPermission() + ". Tap again to try anyway."; status(d, true); log("Error", d); }
+      } catch (err) { status(err.message, true); log("Error", err.message); }
       return;
     }
     try { talk.setPointerCapture(e.pointerId); } catch {}
