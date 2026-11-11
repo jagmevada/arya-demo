@@ -111,6 +111,8 @@
     <div class="hint">Arya says the right-hand side whenever the left-hand word appears. Change the spelling until it sounds right.</div>
     <label>Voice threshold (always-listening mode)<input id="sens" type="range" min="0.002" max="0.08" step="0.001"></label>
     <label>Silence before end of turn (ms)<input id="silence" type="number" min="300" max="3000" step="100"></label>
+    <label style="display:flex;align-items:center;gap:8px"><input id="general" type="checkbox" style="width:auto;margin:0">Benchmark mode: answer general questions too (leave off for the demo)</label>
+    <label>Crew turns remembered (empty = default: 4 for open models, 6 for Claude). More turns make every call longer and slower.<input id="memTurns" type="number" min="1" max="1000" step="1" placeholder="default"></label>
     <label>Arya system prompt<textarea id="prompt"></textarea></label>
     <div class="row"><button id="resetPrompt">Reset prompt to default</button></div>
     <div class="hint">Keys are saved only in this browser (localStorage). Nothing is stored in the page code.</div>
@@ -165,7 +167,10 @@ const STT_MODEL = "ink-2";
 const TTS_MODEL = "sonic-3.6";
 const DEFAULT_VOICE = "9cebb910-d4b7-4a4a-85a4-12c79137724c"; // Aarti - Conversationalist (Indian accent)
 const STT_RATE = 16000;
-const VERSION = 78; // bump on every push; shown at the bottom of the page
+const VERSION = 84; // bump on every push; shown at the bottom of the page
+// Benchmark mode: lifts the console-only scope so the brain's general knowledge can be measured. Appended last so it overrides the scope rules above it.
+const GENERAL_RULE = "\n\n## Benchmark mode (overrides the scope rules above)\nThe crew is testing your general knowledge. Answer any question, on any subject (general knowledge, science, history, maths, language, writing), from your own knowledge, correctly and briefly; do not decline it and do not say you can only help with the console. The rule that every value must come from the snapshot applies only to live mission and console values. Mission and console questions work exactly as before. Keep the spoken style: short, no lists, no markdown.";
+const generalRule = () => $("general").checked ? GENERAL_RULE : "";
 const $ = id => document.getElementById(id);
 let state = "off", ctx = null, utt = null, preroll = [], lastVoice = 0, token = null, tokenExp = 0, tokenP = null, history = [];
 let pressAt = 0, latched = false; // latched = mic unmuted by a tap, stays live until the next tap
@@ -179,7 +184,7 @@ const store = {
 const aryaDefault = $("aryaDefault").textContent.trim();
 const LEX_DEFAULT = "ISTRAC=Estrack\nISRO=Isro\nSHAR=Shaar\nSAC=Sack\nMOX=Mox\nNavIC=Navik\nHLVM3=H L V M 3\nLVM3=L V M 3\nkPa=kilopascal";
 const KEYTERMS = ["Arya", "ISTRAC", "ISRO", "Sriharikota", "HLVM3", "Bengaluru", "Port Blair", "splashdown", "deorbit", "scrubber", "visor", "acknowledge", "caution"]; // helps Ink hear these words
-const fields = { replyLang:"auto", oPrice:"", brain:"claude", oUrl:"https://openrouter.ai/api/v1", oKey:"", oModel:"", cKey:"", aKey:"", model:"claude-haiku-5-5", voice:DEFAULT_VOICE, sens:"0.015", silence:"900", prompt:aryaDefault, lex:LEX_DEFAULT };
+const fields = { replyLang:"auto", oPrice:"", brain:"claude", oUrl:"https://openrouter.ai/api/v1", oKey:"", oModel:"", cKey:"", aKey:"", model:"claude-haiku-5-5", voice:DEFAULT_VOICE, sens:"0.015", silence:"900", memTurns:"", prompt:aryaDefault, lex:LEX_DEFAULT };
 for (const [k, d] of Object.entries(fields)) {
   $(k).value = store.get(k, d);
   $(k).addEventListener("input", () => {
@@ -401,6 +406,8 @@ $("oHi").value = store.get("oHi", ""); $("oHi").oninput = () => store.set("oHi",
 // a brain that is good at tools but writes faulty Hindi (Qwen 3.8) can leave the Hindi sentence to a second model
 const hindiModel = () => $("oHi").value.trim() || $("oModel").value.trim();
 $("oFind").oninput = () => { store.set("oFind", $("oFind").value); if (openList.length) drawModels(openList.some(m => m.supported_parameters)); };
+$("general").checked = store.get("general", "0") === "1";
+$("general").onchange = () => store.set("general", $("general").checked ? "1" : "0");
 $("oFit").checked = store.get("oFit", "1") === "1";
 $("oFit").onchange = () => { store.set("oFit", $("oFit").checked ? "1" : "0"); if (openList.length) drawModels(openList.some(m => m.supported_parameters)); };
 $("oFree").checked = store.get("oFree", "") === "1";
@@ -470,7 +477,7 @@ function log(who, text) {
 }
 $("clear").onclick = () => { $("log").innerHTML = ""; history = []; record.length = 0; };
 $("copyLog").onclick = async () => {
-  const text = ["Arya demo v" + VERSION + " | model " + brainModel() + (openBrain() && $("oHi").value.trim() ? " + Hindi by " + $("oHi").value.trim() : "") + (openBrain() ? " via " + $("oUrl").value.trim() + " | usage " + usageText() : "") + " | mode " + mode + " | sim " + sim.speed + "x at " + clock(sim.t) + (sim.running ? "" : " HOLD"),
+  const text = ["Arya demo v" + VERSION + " | model " + brainModel() + (openBrain() && $("oHi").value.trim() ? " + Hindi by " + $("oHi").value.trim() : "") + (openBrain() ? " via " + $("oUrl").value.trim() + " | usage " + usageText() : "") + " | mode " + mode + ($("general").checked ? " | BENCHMARK: general questions on" : "") + ($("memTurns").value.trim() ? " | memory " + $("memTurns").value.trim() + " turns" : "") + " | sim " + sim.speed + "x at " + clock(sim.t) + (sim.running ? "" : " HOLD"),
     "mic: " + micDiag(), navigator.userAgent, "--- oldest first ---", ...record].join("\n");
   let ok = false;
   try { await navigator.clipboard.writeText(text); ok = true; }
@@ -1141,7 +1148,7 @@ async function claude(messages, signal) {
       },
       body: JSON.stringify({ model: $("model").value, max_tokens: 700, tools: TOOLS, messages,
         system: [{ type: "text", text: $("prompt").value + STATIC_CONTEXT, cache_control: { type: "ephemeral" } }, // fixed part: cached by Anthropic when long enough
-                 { type: "text", text: demoContext() }] }),
+                 { type: "text", text: demoContext() + generalRule() }] }),
     }, 30000, signal);
     if (r.ok) return r.json();
     if (attempt === 0 && [429, 500, 502, 503, 529].includes(r.status)) { await sleep(800); continue; } // one retry on overload
@@ -1153,7 +1160,7 @@ async function claude(messages, signal) {
 function toOpenMessages(messages) {
   // Extra Hindi guidance for open models: a field log showed misspelled Devanagari for English-origin words
   const hindi = "\n\n## Hindi spelling\nWhen you answer in Hindi, use short everyday words and short sentences of at most 12 words each, and check each word is a real, correctly spelled Hindi word with its full ending: write करता है, होता है, रहे हैं, आपको, जो; never clipped forms like करत, होत, रहें हैं, आपकें, जे. Standard terms and abbreviations are always said in English, exactly as in an English reply, never translated or respelled in Hindi: CO2, O2, kPa, MET, AOS, LOS, ISTRAC, S200, L110, C25. Write every English-origin or technical word in English letters, never in Devanagari: lights, camera, zone, spot, valve, scrubber, fan, pressure, oxygen, orbit, alert, caution, warning, mission. Example: \"सभी lights बंद कर दी हैं।\"";
-  const out = [{ role: "system", content: $("prompt").value + STATIC_CONTEXT + hindi + demoContext() }];
+  const out = [{ role: "system", content: $("prompt").value + STATIC_CONTEXT + hindi + demoContext() + generalRule() }];
   for (const m of messages) {
     if (typeof m.content === "string") { out.push({ role: m.role, content: m.content }); continue; }
     if (m.role === "assistant") {
@@ -1209,11 +1216,32 @@ async function openModel(messages, signal, model = $("oModel").value.trim()) {
     throw new Error((r.status === 402 || /credit|quota|billing|payment/i.test(body) ? "LLM: the provider says the credit or quota is used up. " : "") + "LLM: " + r.status + " " + body);
   }
 }
+// The confirmation the crew hears after a light or camera change that worked, when the model wrote none. Empty for anything
+// else (reminders, mixed calls), which still goes back to the model for its own words.
+function autoConfirm(uses, userText) {
+  if (!uses.length || !uses.every(u => u.name === "set_cabin_lights" || u.name === "set_camera")) return "";
+  const hi = $("replyLang").value === "auto" && /[ऀ-ॿ]/.test(userText); // Devanagari from the crew: answer in Hindi
+  const list = ids => ids.join(hi ? " और " : " and ");
+  const parts = [];
+  for (const u of uses) {
+    const a = u.input || {};
+    if (u.name === "set_camera") { parts.push(hi ? "camera " + a.view + " view पर कर दी है" : a.view + " camera is on"); continue; }
+    const yes = v => v === true || v === "true";
+    if (yes(a.all_on)) parts.push(hi ? "सारी lights on कर दी हैं" : "all cabin lights are on");
+    if (yes(a.all_off)) parts.push(hi ? "सारी lights बंद कर दी हैं" : "all cabin lights are off");
+    for (const [k, what, on] of [["zones_on", "zone", true], ["zones_off", "zone", false], ["spots_on", "spot", true], ["spots_off", "spot", false]])
+      if (a[k]?.length) parts.push(hi ? what + " " + list(a[k]) + " की light " + (on ? "on" : "बंद") + " कर दी है" : what + " " + list(a[k]) + (on ? " on" : " off"));
+    if (a.dim_percent != null) parts.push(hi ? "brightness " + sim.lights.dim + " percent कर दी है" : "brightness set to " + sim.lights.dim + " percent");
+  }
+  if (!parts.length) return "";
+  const s = parts.join(", ");
+  return s[0].toUpperCase() + s.slice(1) + (hi ? "।" : ".");
+}
 async function think(userText, signal) {
   if (openBrain() ? !$("oUrl").value.trim() || !brainModel() : !$("aKey").value.trim())
     throw new Error(openBrain() ? "Enter the open model's URL and model name in Settings." : "Enter your Anthropic API key in Settings.");
   const turns = history.flatMap((m, i) => m.role === "user" && typeof m.content === "string" ? [i] : []);
-  const keep = openBrain() ? 4 : 6; // open models copy their own earlier slips, so they get a shorter memory
+  const keep = Math.max(1, Math.round(+$("memTurns").value) || (openBrain() ? 4 : 6)); // open models copy their own earlier slips, so they get a shorter memory by default; Settings can raise it to measure the cost
   if (turns.length > keep) history = history.slice(turns[turns.length - keep]); // ponytail: short rolling memory, cut only at turn starts
   const start = history.length;
   history.push({ role: "user", content: "[mission clock " + clock(sim.t) + "] " + userText }); // the stamp shows Claude that time has moved since older turns
@@ -1238,6 +1266,10 @@ async function think(userText, signal) {
       // A plain action that worked needs no second model call: the sentence the model wrote with the call is the reply.
       // That second call was half of the 8 to 15 s wait on light commands. Anything that failed or returned data still goes back to the model.
       if (quick && said) { history.push({ role: "assistant", content: [{ type: "text", text: said }] }); return said; }
+      // Qwen3.8 sends light and camera calls with no sentence, which cost a whole second call (5 to 8 s on Jetson-class hardware).
+      // For those two, the console words the confirmation itself from what was actually set. The prompt is unchanged.
+      const auto = quick && !said ? autoConfirm(uses, userText) : "";
+      if (auto) { history.push({ role: "assistant", content: [{ type: "text", text: auto }] }); return auto; }
     }
     throw new Error("Too many tool calls in one turn.");
   } catch (e) { // failed or cancelled turn leaves no half-finished tool call behind

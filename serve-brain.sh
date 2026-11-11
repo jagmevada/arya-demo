@@ -31,6 +31,16 @@ echo "gpu     : CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 echo "context : $CTX tokens"
 echo "serving : http://localhost:8000/v1   allowed page origins: $ORIGINS"
 
+# MTP speculative decoding: Qwen3.8 ships a 1-layer draft head (mtp.* tensors in the FP8
+# checkpoint). It drafts MTP tokens and the full model verifies them in one pass, so the
+# weights are read fewer times per output token. Measured on an RTX 6000 Ada slowed to
+# T4000-level compute (480 GB/s): 11.3 -> 22 tokens/s, average Arya turn 5.3 -> 3.9 s, and
+# the same accuracy (27-task test x3: 69/81 without, 68/81 with). MTP=0 turns it off.
+MTP="${MTP:-3}"
+SPEC=()
+[ "$MTP" -gt 0 ] && SPEC=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP}")
+echo "mtp     : $MTP draft tokens"
+
 # --max-num-seqs 16       : the default 256 exceeds this hybrid model's state
 #                           cache on a 48 GB card and startup fails
 # --language-model-only   : text brain only; skips the vision tower
@@ -49,4 +59,5 @@ exec "$VLLM" serve "$MODEL" \
   --reasoning-parser qwen3 \
   --default-chat-template-kwargs '{"enable_thinking": false}' \
   --allowed-origins "$ORIGINS" \
+  "${SPEC[@]}" \
   "$@"

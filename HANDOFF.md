@@ -44,7 +44,7 @@ Run on 11 November 2026 on an RTX 6000 Ada (48 GB) with vLLM 0.28.0. Use the scr
 
 ```bash
 hf download Qwen/Qwen3.8-27B-FP8      # once, about 29 GB
-./serve-brain.sh                      # GPU=1 ./serve-brain.sh for another GPU
+./serve-brain.sh                      # GPU=1 for another GPU; MTP=0 turns speculative decoding off
 ```
 
 It runs:
@@ -74,6 +74,38 @@ Notes:
 - In Settings, choose the provider first and then type the model name: changing the provider clears the model name field.
 
 Memory on the 48 GB card: the weights take 27.6 GB. vLLM reserves 90 % of the card by default (41.8 GB in use), mostly cache Arya does not need; one 7,000-token turn needs well under 1 GB. A realistic total is 31 to 33 GB of GPU memory plus about 4.5 GB of system memory for vLLM itself. On a device where GPU and system memory are shared, FP8 needs about 36 to 37 GB including the operating system, so a 32 GB device does not fit it.
+
+## 3a. Speed on edge hardware (Jetson T4000) and what was tried
+
+Measured on 11 November 2026 on an RTX 6000 Ada slowed to Jetson T4000 level: graphics clock locked at 1005 MHz (tensor compute about T4000) and memory locked at 5001 MHz (480 GB/s, faster than T4000) and at 810 MHz (78 GB/s, slower than T4000). The T4000 figure (273 GB/s) is interpolated between the two measured runs. Text in, text out through the page's own `think()`, no Cartesia. 31-turn console conversation in English, Hindi and Hinglish, with faults, procedures, timers, a call and a jump.
+
+| Qwen3.8-27B FP8 | Question | Action (2 calls) | Average turn |
+|---|---:|---:|---:|
+| v80, no MTP, 480 GB/s | 3.5 s | 6.4 s | 5.3 s |
+| v80, no MTP, 78 GB/s | 16.1 s | 32.2 s | 23.1 s |
+| **v80, no MTP, T4000 estimate** | **5.4 s** | **10.2 s** | **7.9 s** |
+| v84 + MTP, 480 GB/s | 2.6 s | 5.2 s | 3.9 s |
+| v84 + MTP, 78 GB/s | 8.7 s | 17.8 s | 12.2 s |
+| **v84 + MTP, T4000 estimate** | **3.5 s** | **7.0 s** | **5.1 s** |
+
+Accuracy, built-in 27-task test run 3 times each: v78 without MTP 69/81, v78 with MTP 68/81 (within run-to-run noise; MTP verifies every drafted token with the full model). v84 sends the model a byte-identical request to v78, so its accuracy is v78's.
+
+What each call costs: about 7,700 input tokens (tools 3,046, Arya instructions 844, mission context 1,759, Hindi rules 216, live snapshot 1,857, question about 17), plus the last 4 turns. vLLM reuses about 60 to 70 % of it from the previous call. On a T4000 the larger cost for Qwen FP8 is writing the answer (every output token reads all 28 GB of weights, about 10 tokens/s at 273 GB/s), which is what MTP addresses.
+
+Tried and rejected, because accuracy dropped:
+
+| Change | Speed at 480 GB/s | Accuracy |
+|---|---|---|
+| Live data moved into the crew's latest message (v81/v82) | average turn 3.9 → 2.6 s | two timed actions 2/8 (v78 7/8), asks before a call 4/8 (8/8), Hindi light command claimed done without the tool call 3/8 |
+| Fixed rules first, live data at the end of the system prompt, two lookup tools removed (v83) | faster | 65/81 against v78's 68/81; made up an answer where it should say "not on the console" 2/3 |
+
+Lesson: any change to the prompt's wording, order or tool list changes Qwen's behaviour and must pass the 27-task test three times against v78 before it ships. Server-side settings (MTP) did not.
+
+Other measured points:
+
+- Ternary Bonsai 2 27B (1.75-bit, 6 GB, PrismML llama.cpp fork): 22/27 against Qwen's 24/27 in one run; made up an answer on the "not on the console" trap; called the Flight Director without a yes; stuck in a tool loop on "what is the standard procedure". Slower than Qwen on a T4000 (about 6.6 s per question) because it re-reads the whole prompt every call.
+- `--checkpoint-min-step 512` is needed for Bonsai in llama.cpp; the default 8192 is larger than Arya's prompt, so nothing was ever reused.
+- SiMa Modalix (about 102 GB/s, 50 INT8 TOPS) was estimated far too slow for a 27B model with this prompt. Jetson T5000 has the same 273 GB/s as T4000 and about 1.7× the compute: answer writing is no faster, prompt reading is.
 
 ## 4. First tests at the office
 
