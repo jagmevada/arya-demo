@@ -40,23 +40,40 @@ The OpenRouter runs did not record which host or precision answered. Only the Ce
 
 ## 3. Serving the model locally
 
-Starting point for vLLM. Check every flag against `vllm serve --help` for the installed version; none of this has been run by us.
+Run on 11 November 2026 on an RTX 6000 Ada (48 GB) with vLLM 0.28.0. Use the script in this repository:
 
 ```bash
-vllm serve Qwen/Qwen3.8-27B-FP8 \
-  --host 0.0.0.0 --port 8000 \
-  --max-model-len 32768 \
-  --enable-auto-tool-choice --tool-call-parser hermes \
-  --allowed-origins '["http://localhost:8080"]'
+hf download Qwen/Qwen3.8-27B-FP8      # once, about 29 GB
+./serve-brain.sh                      # GPU=1 ./serve-brain.sh for another GPU
 ```
+
+It runs:
+
+```bash
+HF_HUB_OFFLINE=1 vllm serve Qwen/Qwen3.8-27B-FP8 \
+  --host 0.0.0.0 --port 8000 \
+  --max-model-len 32768 --max-num-seqs 16 \
+  --language-model-only \
+  --enable-auto-tool-choice --tool-call-parser qwen3_coder \
+  --reasoning-parser qwen3 \
+  --default-chat-template-kwargs '{"enable_thinking": false}' \
+  --allowed-origins '["http://localhost:8080","http://127.0.0.1:8080"]'
+```
+
+Measured: about 0.7 s for a short answer; a correct tool call; CORS allowed for the page; no hidden reasoning tokens.
 
 Notes:
 
+- The tool parser is `qwen3_coder` (per the vLLM Qwen3.8 recipe), not `hermes` as first assumed.
+- `--max-num-seqs 16` is required. The default 256 exceeds this hybrid model's state cache on a 48 GB card and startup fails.
+- `HF_HUB_OFFLINE=1`: the weights are local. Without it vLLM contacts Hugging Face at start, and a CDN error there made startup fail.
+- Download into the cache vLLM will read (`HF_HOME`). A model downloaded into another cache folder is not found.
 - The official FP8 model card says not to pass `--quantization fp8`; the setting is read from the checkpoint.
 - The page calls the server from the browser, so the server must allow the page's origin (CORS). Without it every call fails with a network error.
-- Tool calling must be enabled on the server. The parser name for Qwen 3.8 is an assumption (`hermes` is the usual one for Qwen); confirm it in the vLLM documentation.
-- Switch thinking off in the server or chat template. The page only sends its "no reasoning" option to OpenRouter.
-- The page sends about 7,000 tokens of context per turn. 32,768 tokens of context is ample.
+- Thinking is switched off on the server. The page only sends its "no reasoning" option to OpenRouter.
+- In Settings, choose the provider first and then type the model name: changing the provider clears the model name field.
+
+Memory on the 48 GB card: the weights take 27.6 GB. vLLM reserves 90 % of the card by default (41.8 GB in use), mostly cache Arya does not need; one 7,000-token turn needs well under 1 GB. A realistic total is 31 to 33 GB of GPU memory plus about 4.5 GB of system memory for vLLM itself. On a device where GPU and system memory are shared, FP8 needs about 36 to 37 GB including the operating system, so a 32 GB device does not fit it.
 
 ## 4. First tests at the office
 
